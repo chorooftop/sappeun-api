@@ -5,7 +5,7 @@
   "description": "NestJS API for the Sappeun Flutter app.",
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=20.19.0",
+    "node": "20.x",
     "pnpm": ">=10.0.0"
   },
   "scripts": {
