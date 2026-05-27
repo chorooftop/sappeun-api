@@ -107,6 +107,16 @@ export class MediaController {
     })
   }
 
+  @Post('photos/promote-guest')
+  async promoteGuestPhotos(@Req() request: Request) {
+    const user = await this.authService.requireUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.promoteGuestPhotosForUser({
+      userId: user.id,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+
   @Post('clips/presign')
   async presignClip(
     @Req() request: Request,
@@ -171,6 +181,189 @@ export class MediaController {
 
   @Delete('clips/:clipId')
   async deleteClip(
+    @Req() request: Request,
+    @Param('clipId') clipId: string,
+    @Query('ownerKind') ownerKind: string,
+  ) {
+    const { user } = await this.authService.resolveUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.deleteClip({
+      clipId,
+      ownerKind: parseOwnerKind(ownerKind),
+      user,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+
+  @Post('clips/promote-guest')
+  async promoteGuestClips(@Req() request: Request) {
+    const user = await this.authService.requireUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.promoteGuestClipsForUser({
+      userId: user.id,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+}
+
+@Controller('api/photos')
+export class PhotosCompatibilityController {
+  constructor(
+    private readonly authService: AuthService,
+    private readonly mediaService: MediaService,
+  ) {}
+
+  @Post('presign')
+  async presign(
+    @Req() request: Request,
+    @Body(new ZodValidationPipe(presignPhotoUploadSchema))
+    input: PresignPhotoUploadInput,
+  ) {
+    const { user } = await this.authService.resolveUser(request)
+    const guestSession = this.authService.resolveOrCreateGuestSession(request)
+    return this.mediaService.preparePhotoUpload({
+      input,
+      user,
+      guestSessionId: guestSession.guestSessionId!,
+    })
+  }
+
+  @Post('confirm')
+  async confirm(
+    @Req() request: Request,
+    @Body(new ZodValidationPipe(confirmPhotoUploadSchema))
+    input: ConfirmPhotoUploadInput,
+  ) {
+    const { user } = await this.authService.resolveUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.confirmPhotoUpload({
+      input,
+      user,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+
+  @Post('preview')
+  async preview(
+    @Req() request: Request,
+    @Body(new ZodValidationPipe(photoPreviewSchema)) input: PhotoPreviewInput,
+  ) {
+    const { user } = await this.authService.resolveUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.createPhotoPreviewUrls({
+      input,
+      user,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+
+  @Post('promote-guest')
+  async promoteGuest(@Req() request: Request) {
+    const user = await this.authService.requireUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.promoteGuestPhotosForUser({
+      userId: user.id,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+
+  @Delete(':photoId')
+  async delete(
+    @Req() request: Request,
+    @Param('photoId') photoId: string,
+    @Query('ownerKind') ownerKind: string,
+  ) {
+    const { user } = await this.authService.resolveUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.deletePhoto({
+      photoId,
+      ownerKind: parseOwnerKind(ownerKind),
+      user,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+}
+
+@Controller('api/clips')
+export class ClipsCompatibilityController {
+  constructor(
+    private readonly authService: AuthService,
+    private readonly mediaService: MediaService,
+  ) {}
+
+  @Post('presign')
+  async presign(
+    @Req() request: Request,
+    @Body(new ZodValidationPipe(presignClipUploadSchema))
+    input: PresignClipUploadInput,
+  ) {
+    const { user } = await this.authService.resolveUser(request)
+    const guestSession = this.authService.resolveOrCreateGuestSession(request)
+    return this.mediaService.prepareClipUpload({
+      input,
+      user,
+      guestSessionId: guestSession.guestSessionId!,
+    })
+  }
+
+  @Post('confirm')
+  async confirm(
+    @Req() request: Request,
+    @Body(new ZodValidationPipe(confirmClipUploadSchema))
+    input: ConfirmClipUploadInput,
+  ) {
+    const { user } = await this.authService.resolveUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.confirmClipUpload({
+      input,
+      user,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+
+  @Post('preview')
+  async preview(
+    @Req() request: Request,
+    @Body(new ZodValidationPipe(clipPreviewSchema)) input: ClipPreviewInput,
+  ) {
+    const { user } = await this.authService.resolveUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.createClipPreviewUrls({
+      input,
+      user,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+
+  @Post('promote-guest')
+  async promoteGuest(@Req() request: Request) {
+    const user = await this.authService.requireUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.promoteGuestClipsForUser({
+      userId: user.id,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+
+  @Patch(':clipId')
+  async updateDescription(
+    @Req() request: Request,
+    @Param('clipId') clipId: string,
+    @Body(new ZodValidationPipe(updateClipDescriptionSchema))
+    input: UpdateClipDescriptionInput,
+  ) {
+    const { user } = await this.authService.resolveUser(request)
+    const guestSession = this.authService.getGuestSession(request)
+    return this.mediaService.updateClipDescription({
+      clipId,
+      input,
+      user,
+      guestSessionId: guestSession.guestSessionId,
+    })
+  }
+
+  @Delete(':clipId')
+  async delete(
     @Req() request: Request,
     @Param('clipId') clipId: string,
     @Query('ownerKind') ownerKind: string,

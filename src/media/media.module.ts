@@ -1,12 +1,20 @@
 import { Module } from '@nestjs/common'
 
 import { BoardsModule } from '@/boards/boards.module'
-import { MediaController } from '@/media/media.controller'
+import {
+  ClipsCompatibilityController,
+  MediaController,
+  PhotosCompatibilityController,
+} from '@/media/media.controller'
 import { MediaService } from '@/media/media.service'
 
 @Module({
   imports: [BoardsModule],
-  controllers: [MediaController],
+  controllers: [
+    MediaController,
+    PhotosCompatibilityController,
+    ClipsCompatibilityController,
+  ],
   providers: [MediaService],
   exports: [MediaService],
 })

@@ -6,6 +6,7 @@ import {
   missionSnapshotSchema,
 } from '@/boards/boards.schemas'
 import {
+  MAX_CLIP_DESCRIPTION_LENGTH,
   MAX_CLIP_DURATION_GRACE_MS,
   MAX_CLIP_SIZE_BYTES,
   MAX_PHOTO_SIZE_BYTES,
@@ -55,7 +56,11 @@ export const presignClipUploadSchema = z.object({
   nickname: z.string().trim().min(1).max(40),
   title: z.string().trim().min(1).max(24).optional(),
   description: z.string().trim().max(120).optional(),
-  clipDescription: z.string().trim().max(120).optional(),
+  clipDescription: z
+    .string()
+    .trim()
+    .max(MAX_CLIP_DESCRIPTION_LENGTH)
+    .optional(),
   freePosition: z.number().int().min(0).max(24),
   cellIds: z.array(z.string().min(1).max(80)).min(9).max(25),
   missionSnapshots: z.array(missionSnapshotSchema).min(9).max(25).optional(),
@@ -81,7 +86,17 @@ export const confirmClipUploadSchema = z.object({
 
 export const updateClipDescriptionSchema = z.object({
   ownerKind: clipOwnerKindSchema,
-  description: z.string().trim().max(120).optional(),
+  description: z.string().trim().max(MAX_CLIP_DESCRIPTION_LENGTH).optional(),
+  boardSnapshot: z
+    .object({
+      boardKind: boardKindSchema,
+      title: z.string().trim().min(1).max(24),
+      description: z.string().trim().max(120).optional(),
+      freePosition: z.number().int().min(0).max(24),
+      cellIds: z.array(z.string().min(1).max(80)).min(9).max(25),
+      missionSnapshots: z.array(missionSnapshotSchema).min(9).max(25),
+    })
+    .optional(),
 })
 
 export const clipPreviewSchema = z.object({

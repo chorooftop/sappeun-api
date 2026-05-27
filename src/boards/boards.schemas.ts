@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { MAX_CLIP_DESCRIPTION_LENGTH } from '@/media/media.constants'
+
 export const boardModeSchema = z.enum(['5x5', '3x3'])
 export const boardKindSchema = z.enum(['mission', 'custom'])
 
@@ -62,7 +64,7 @@ export const persistedBoardClipSchema = z.object({
   posterUrl: z.string().optional(),
   posterUrlExpiresAt: z.string().optional(),
   durationMs: z.number().min(1).max(3000),
-  description: z.string().trim().max(120).optional(),
+  description: z.string().trim().max(MAX_CLIP_DESCRIPTION_LENGTH).optional(),
   pendingKey: z.string().optional(),
   uploadStatus: z.enum(['local_pending', 'uploading', 'uploaded', 'failed']),
 })
