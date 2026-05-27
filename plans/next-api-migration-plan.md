@@ -9,30 +9,30 @@ Source server logic: `/Users/oksang/Desktop/sappeun/sappeun/src/lib/{boards,phot
 
 The current Next.js API surface has 22 route handlers:
 
-| Current route | Methods | Main source logic | NestJS target |
-| --- | --- | --- | --- |
-| `/api/profile` | `GET`, `PATCH` | `auth/session.ts`, `supabase/server.ts` | `users` |
-| `/api/boards` | `GET` | `boards/server.ts:listUserBoards` | `boards` |
-| `/api/boards/active` | `GET` | `boards/server.ts:getLatestUserBoardSession` | `boards` |
-| `/api/boards/current` | `GET`, `DELETE` | `boards/server.ts:getLatestUserBoardSession`, `deleteActiveUserBoards` | `boards` |
-| `/api/boards/session` | `POST` | `boards/server.ts:ensureUserBoardFromSession` | `boards` |
-| `/api/boards/adopt-guest-session` | `POST` | `boards/server.ts:adoptGuestBoardSession` | `boards` |
-| `/api/boards/[boardId]` | `GET`, `DELETE` | `boards/server.ts:getUserBoardDetail`, `deleteUserBoard` | `boards` |
-| `/api/boards/[boardId]/end` | `POST` | `boards/server.ts:endUserBoard` | `boards` |
-| `/api/boards/[boardId]/cells/[position]` | `PATCH`, `POST` | `boards/server.ts:markUserBoardCell`, `replaceUserBoardCell` | `boards` |
-| `/api/photos/presign` | `POST` | `photos/server.ts:preparePhotoUpload` | `media` |
-| `/api/photos/confirm` | `POST` | `photos/server.ts:confirmPhotoUpload` | `media` |
-| `/api/photos/preview` | `POST` | `photos/server.ts:createPhotoPreviewUrls` | `media` |
-| `/api/photos/[photoId]` | `DELETE` | `photos/server.ts:deletePhoto` | `media` |
-| `/api/photos/promote-guest` | `POST` | `photos/server.ts:promoteGuestPhotosForUser` | `media` |
-| `/api/clips/presign` | `POST` | `clips/server.ts:prepareClipUpload` | `media` |
-| `/api/clips/confirm` | `POST` | `clips/server.ts:confirmClipUpload` | `media` |
-| `/api/clips/preview` | `POST` | `clips/server.ts:createClipPreviewUrls` | `media` |
-| `/api/clips/[clipId]` | `DELETE`, `PATCH` | `clips/server.ts:deleteClip`, `updateClipDescription` | `media` |
-| `/api/clips/promote-guest` | `POST` | `clips/server.ts:promoteGuestClipsForUser` | `media` |
-| `/api/share/[boardId]` | `POST`, `DELETE` | `share/server.ts:createBoardShare`, `deleteBoardShare` | `shares` |
-| `/api/jobs/cleanup-temp-photos` | `GET` | `photos/server.ts:cleanupExpiredGuestPhotos` | `jobs` |
-| `/api/jobs/cleanup-temp-clips` | `GET` | `clips/server.ts:cleanupExpiredGuestClips` | `jobs` |
+| Current route                            | Methods           | Main source logic                                                      | NestJS target |
+| ---------------------------------------- | ----------------- | ---------------------------------------------------------------------- | ------------- |
+| `/api/profile`                           | `GET`, `PATCH`    | `auth/session.ts`, `supabase/server.ts`                                | `users`       |
+| `/api/boards`                            | `GET`             | `boards/server.ts:listUserBoards`                                      | `boards`      |
+| `/api/boards/active`                     | `GET`             | `boards/server.ts:getLatestUserBoardSession`                           | `boards`      |
+| `/api/boards/current`                    | `GET`, `DELETE`   | `boards/server.ts:getLatestUserBoardSession`, `deleteActiveUserBoards` | `boards`      |
+| `/api/boards/session`                    | `POST`            | `boards/server.ts:ensureUserBoardFromSession`                          | `boards`      |
+| `/api/boards/adopt-guest-session`        | `POST`            | `boards/server.ts:adoptGuestBoardSession`                              | `boards`      |
+| `/api/boards/[boardId]`                  | `GET`, `DELETE`   | `boards/server.ts:getUserBoardDetail`, `deleteUserBoard`               | `boards`      |
+| `/api/boards/[boardId]/end`              | `POST`            | `boards/server.ts:endUserBoard`                                        | `boards`      |
+| `/api/boards/[boardId]/cells/[position]` | `PATCH`, `POST`   | `boards/server.ts:markUserBoardCell`, `replaceUserBoardCell`           | `boards`      |
+| `/api/photos/presign`                    | `POST`            | `photos/server.ts:preparePhotoUpload`                                  | `media`       |
+| `/api/photos/confirm`                    | `POST`            | `photos/server.ts:confirmPhotoUpload`                                  | `media`       |
+| `/api/photos/preview`                    | `POST`            | `photos/server.ts:createPhotoPreviewUrls`                              | `media`       |
+| `/api/photos/[photoId]`                  | `DELETE`          | `photos/server.ts:deletePhoto`                                         | `media`       |
+| `/api/photos/promote-guest`              | `POST`            | `photos/server.ts:promoteGuestPhotosForUser`                           | `media`       |
+| `/api/clips/presign`                     | `POST`            | `clips/server.ts:prepareClipUpload`                                    | `media`       |
+| `/api/clips/confirm`                     | `POST`            | `clips/server.ts:confirmClipUpload`                                    | `media`       |
+| `/api/clips/preview`                     | `POST`            | `clips/server.ts:createClipPreviewUrls`                                | `media`       |
+| `/api/clips/[clipId]`                    | `DELETE`, `PATCH` | `clips/server.ts:deleteClip`, `updateClipDescription`                  | `media`       |
+| `/api/clips/promote-guest`               | `POST`            | `clips/server.ts:promoteGuestClipsForUser`                             | `media`       |
+| `/api/share/[boardId]`                   | `POST`, `DELETE`  | `share/server.ts:createBoardShare`, `deleteBoardShare`                 | `shares`      |
+| `/api/jobs/cleanup-temp-photos`          | `GET`             | `photos/server.ts:cleanupExpiredGuestPhotos`                           | `jobs`        |
+| `/api/jobs/cleanup-temp-clips`           | `GET`             | `clips/server.ts:cleanupExpiredGuestClips`                             | `jobs`        |
 
 ## Cross-Cutting Contracts To Preserve
 
