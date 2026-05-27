@@ -113,12 +113,49 @@ Optional runtime variables:
 
 ## Initial Implementation Slice
 
-1. Bootstrap NestJS with config validation, health route, CORS, Helmet, and TypeScript build/test scripts.
-2. Add Supabase anon/admin client providers.
-3. Add auth/guest request resolution.
-4. Add R2 service with current Sappeun object key policy.
-5. Add media schemas and first photo/clip presign/confirm/preview/delete controller surface.
-6. Add migration plan for the rest of the Next.js API.
+1. [x] Bootstrap NestJS with config validation, health route, CORS, Helmet, and TypeScript build/test scripts.
+2. [x] Add Supabase anon/admin client providers.
+3. [x] Add auth/guest request resolution.
+4. [x] Add R2 service with current Sappeun object key policy.
+5. [x] Add media schemas and first photo/clip presign/confirm/preview/delete controller surface.
+6. [x] Add migration plan for the rest of the Next.js API.
+
+## Implementation Progress
+
+Completed commits:
+
+- `d422982 docs: plan nestjs api migration`
+- `ddae989 feat: bootstrap nestjs api foundation`
+
+Verified:
+
+- `pnpm build`
+- `pnpm lint`
+- `pnpm test`
+- local boot with dummy environment values
+- `GET /v1/health`
+
+Implemented route surface:
+
+- `GET /v1/health`
+- `GET /v1/users/me`
+- `POST /v1/boards/session`
+- `POST /v1/media/photos/presign`
+- `POST /v1/media/photos/confirm`
+- `POST /v1/media/photos/preview`
+- `DELETE /v1/media/photos/:photoId`
+- `POST /v1/media/clips/presign`
+- `POST /v1/media/clips/confirm`
+- `POST /v1/media/clips/preview`
+- `PATCH /v1/media/clips/:clipId`
+- `DELETE /v1/media/clips/:clipId`
+- placeholder `shares` and `jobs` routes for later phase wiring
+
+Not yet verified:
+
+- external Supabase/R2 smoke test with real environment variables
+- parity test against the existing Next.js API responses
+- full board history/detail/share/cleanup behavior
 
 ## Review Notes
 

@@ -129,3 +129,25 @@ Compatibility aliases should be removed after Flutter and web callers are update
 The plan is suitable for the first implementation pass with one adjustment: keep request/response compatibility for media APIs while placing new routes under `/v1/media/**`. That lets Flutter migrate with minimal data contract churn and leaves path changes as a small client concern.
 
 No additional pre-implementation blockers were found. Proceed with the foundation and media boundary first.
+
+## Current Progress
+
+Done in the first implementation pass:
+
+- NestJS project scaffolding, scripts, lockfile, env example, lint/test/build config.
+- Config validation with Supabase/R2/CORS/cron variables.
+- Supabase anon/admin clients with Node 20 WebSocket transport.
+- Bearer auth resolver and `X-Sappeun-Guest-Session-Id` resolver.
+- Cloudflare R2 key generation, HMAC owner hashing, signed upload URLs, preview URLs, object `HEAD`, copy, delete, and prefix delete helpers.
+- First board session persistence helper used by media upload preparation.
+- First media controller/service slice for photo and clip presign/confirm/preview/delete/update-description flows.
+- Placeholder route modules for `shares` and `jobs`.
+
+Next implementation priorities:
+
+1. Add real Supabase/R2 smoke tests against staging credentials.
+2. Port guest photo/clip promotion endpoints.
+3. Port board history/detail/current/end/delete/cell mutation endpoints.
+4. Port share create/delete/public detail behavior.
+5. Replace placeholder cleanup jobs with real expired guest media cleanup.
+6. Add temporary `/api/**` compatibility aliases only if Flutter migration needs old route paths.
