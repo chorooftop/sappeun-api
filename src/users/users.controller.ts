@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Patch, Req, UseGuards } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Get,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common'
 import type { User } from '@supabase/supabase-js'
 import { z } from 'zod'
 import type { Request } from 'express'
@@ -12,6 +20,17 @@ import { UsersService } from '@/users/users.service'
 const updateProfileSchema = z.object({
   nickname: z.string().trim().min(1).max(10),
 })
+
+const authSyncSchema = z
+  .object({
+    provider: z.enum(['kakao', 'apple', 'google']).optional(),
+    displayName: z.string().trim().min(1).max(40).optional(),
+    avatarUrl: z.string().trim().url().max(2048).optional(),
+  })
+  .strict()
+  .default({})
+
+type AuthSyncInput = z.infer<typeof authSyncSchema>
 
 @Controller('users')
 export class UsersController {
@@ -31,6 +50,16 @@ export class UsersController {
     input: { nickname: string },
   ) {
     return this.usersService.updateNickname(user.id, input.nickname)
+  }
+
+  @Post('me/auth-sync')
+  @UseGuards(SupabaseAuthGuard)
+  syncAuthProfile(
+    @CurrentUser() user: User,
+    @Body(new ZodValidationPipe(authSyncSchema))
+    input: AuthSyncInput,
+  ) {
+    return this.usersService.syncAuthProfile(user, input)
   }
 }
 
