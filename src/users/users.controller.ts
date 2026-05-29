@@ -32,6 +32,21 @@ const authSyncSchema = z
 
 type AuthSyncInput = z.infer<typeof authSyncSchema>
 
+const completeSignupSchema = z
+  .object({
+    birthDate: z.iso.date(),
+    consents: z
+      .object({
+        terms: z.boolean(),
+        privacy: z.boolean(),
+        marketing: z.boolean().optional().default(false),
+      })
+      .strict(),
+  })
+  .strict()
+
+type CompleteSignupBody = z.infer<typeof completeSignupSchema>
+
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
@@ -60,6 +75,22 @@ export class UsersController {
     input: AuthSyncInput,
   ) {
     return this.usersService.syncAuthProfile(user, input)
+  }
+
+  @Post('me/signup')
+  @UseGuards(SupabaseAuthGuard)
+  completeSignup(
+    @CurrentUser() user: User,
+    @Body(new ZodValidationPipe(completeSignupSchema))
+    input: CompleteSignupBody,
+  ) {
+    return this.usersService.completeSignup(user, input)
+  }
+
+  @Get('me/consents')
+  @UseGuards(SupabaseAuthGuard)
+  getConsents(@CurrentUser() user: User) {
+    return this.usersService.getConsents(user)
   }
 }
 

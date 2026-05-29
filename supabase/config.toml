@@ -1,0 +1,11 @@
+# Supabase 프로젝트 설정 (최소 구성)
+# 전체 설정은 `supabase init`으로 생성/병합한다. 여기서는 link/db 명령이 프로젝트를
+# 식별할 수 있도록 project_id만 명시한다.
+#
+# 적용 워크플로 (DB 비밀번호 확보 후):
+#   supabase login
+#   supabase link --project-ref wtptvgxyqkqqsfkdsoox
+#   supabase db dump --schema public > supabase/migrations/0001_baseline.sql   # 정식 baseline
+#   supabase db push                                                           # 신규 마이그레이션 적용
+
+project_id = "wtptvgxyqkqqsfkdsoox"

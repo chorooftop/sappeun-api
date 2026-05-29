@@ -1,7 +1,14 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, UnprocessableEntityException } from '@nestjs/common'
 import type { User } from '@supabase/supabase-js'
 
-import { isMissingColumnError } from '@/supabase/supabase.errors'
+import {
+  CONSENT_SOURCE_SIGNUP,
+  CONSENT_TYPES,
+  CURRENT_CONSENT_VERSIONS,
+  MIN_SIGNUP_AGE,
+  REQUIRED_CONSENT_TYPES,
+  calculateAge,
+} from '@/users/consents.constants'
 import { SupabaseService } from '@/supabase/supabase.service'
 
 const MAX_DISPLAY_NAME_LENGTH = 40
@@ -10,8 +17,19 @@ const UNIQUE_VIOLATION = '23505'
 const AUTH_SYNC_PROVIDERS = ['kakao', 'apple', 'google'] as const
 const PROFILE_COLUMNS =
   'user_id, nickname, display_name, avatar_url, primary_provider, first_login_at, last_seen_at, signup_completed_at, onboarding_completed_at'
-const PROFILE_COLUMNS_WITHOUT_NICKNAME =
-  'user_id, display_name, avatar_url, primary_provider, first_login_at, last_seen_at, signup_completed_at, onboarding_completed_at'
+
+interface CompleteSignupInput {
+  birthDate: string
+  consents: { terms: boolean; privacy: boolean; marketing?: boolean }
+}
+
+interface ConsentRow {
+  consent_type: string
+  version: string
+  accepted_at: string
+  revoked_at: string | null
+  source: string
+}
 
 type AuthSyncProvider = (typeof AUTH_SYNC_PROVIDERS)[number]
 
@@ -65,26 +83,13 @@ export class UsersService {
 
   async updateNickname(userId: string, nickname: string) {
     const now = new Date().toISOString()
-    let { error } = await this.supabase.adminClient
+    const { error } = await this.supabase.adminClient
       .from('profiles')
       .update({
         nickname,
         nickname_updated_at: now,
       })
       .eq('user_id', userId)
-
-    if (
-      error &&
-      isMissingColumnError(error, ['nickname', 'nickname_updated_at'])
-    ) {
-      ;({ error } = await this.supabase.adminClient
-        .from('profiles')
-        .update({
-          display_name: nickname,
-          last_seen_at: now,
-        })
-        .eq('user_id', userId))
-    }
 
     if (error) throw error
 
@@ -94,6 +99,90 @@ export class UsersService {
         nicknameUpdatedAt: now,
       },
     }
+  }
+
+  async completeSignup(user: User, input: CompleteSignupInput) {
+    const age = ageFromBirthDate(input.birthDate)
+    if (age === null) {
+      throw new UnprocessableEntityException({
+        error: 'Invalid birth date.',
+        code: 'INVALID_BIRTH_DATE',
+      })
+    }
+    if (age < MIN_SIGNUP_AGE) {
+      throw new UnprocessableEntityException({
+        error: `만 ${MIN_SIGNUP_AGE}세 미만은 가입할 수 없습니다.`,
+        code: 'AGE_RESTRICTION',
+      })
+    }
+
+    for (const type of REQUIRED_CONSENT_TYPES) {
+      if (!input.consents[type]) {
+        throw new UnprocessableEntityException({
+          error: 'Required consent missing.',
+          code: 'CONSENT_REQUIRED',
+          consentType: type,
+        })
+      }
+    }
+
+    // 프로필 존재 보장 (auth-sync가 선행되지만 방어적으로 생성)
+    const existing = await this.readProfile(user.id)
+    if (!existing) {
+      await this.insertProfile(user.id, profileCandidateFromUser(user, {}))
+    }
+
+    const now = new Date().toISOString()
+
+    // 두 단계로 나뉘지만 재시도-안전(retry-safe)하다:
+    //  - 동의 upsert는 멱등(유니크 키 기준)이고,
+    //  - 프로필 확정 update는 `.is(signup_completed_at, null)` 가드로 최초 1회만 적용된다.
+    // 1단계만 성공하고 2단계가 실패하면 "동의는 있으나 미가입"(PENDING) 상태가 되는데,
+    // 이는 트리거가 요구하는 정상 중간 상태이며 재요청 시 그대로 가입이 완결된다.
+    // (참고: 마케팅 미동의(false)는 가입 시 기록하지 않는다 — 철회는 후속 설정 엔드포인트 담당.)
+
+    // 1) 동의 행 기록 — DB 트리거가 signup_completed_at 설정 전 동의 존재를 검증하므로 먼저 insert
+    const consentRows = grantedConsentRows(user.id, input.consents, now)
+    const { error: consentError } = await this.supabase.adminClient
+      .from('user_consents')
+      .upsert(consentRows, { onConflict: 'user_id,consent_type,version' })
+    if (consentError) throw consentError
+
+    // 2) 생년월일 + signup_completed_at 확정 — 최초 1회만(멱등). birth_date도 같은 업데이트로
+    //    함께 커밋되어, 가입 완료 후 재요청 시 연령 필드가 덮어써지지 않는다.
+    const { error: signupError } = await this.supabase.adminClient
+      .from('profiles')
+      .update({
+        birth_date: input.birthDate,
+        signup_completed_at: now,
+        signup_source: CONSENT_SOURCE_SIGNUP,
+      })
+      .eq('user_id', user.id)
+      .is('signup_completed_at', null)
+    if (signupError) throw signupError
+
+    const profile = await this.readProfile(user.id)
+    return {
+      user: currentUserPayload(user),
+      profile,
+      requiresSignupConsent: false,
+    }
+  }
+
+  async getConsents(user: User) {
+    const { data, error } = await this.supabase.adminClient
+      .from('user_consents')
+      .select('consent_type, version, accepted_at, revoked_at, source')
+      .eq('user_id', user.id)
+      .order('accepted_at', { ascending: false })
+
+    if (error) throw error
+
+    const consents = ((data ?? []) as ConsentRow[]).map((row) => ({
+      ...row,
+      active: row.revoked_at == null,
+    }))
+    return { consents }
   }
 
   async syncAuthProfile(user: User, input: AuthSyncInput = {}) {
@@ -112,21 +201,12 @@ export class UsersService {
     }
   }
 
-  private async readProfile(
-    userId: string,
-    includeNickname = true,
-  ): Promise<ProfileRow | null> {
+  private async readProfile(userId: string): Promise<ProfileRow | null> {
     const { data, error } = await this.supabase.adminClient
       .from('profiles')
-      .select(
-        includeNickname ? PROFILE_COLUMNS : PROFILE_COLUMNS_WITHOUT_NICKNAME,
-      )
+      .select(PROFILE_COLUMNS)
       .eq('user_id', userId)
       .maybeSingle()
-
-    if (error && includeNickname && isMissingColumnError(error, ['nickname'])) {
-      return this.readProfile(userId, false)
-    }
 
     if (error) throw error
     if (!data) return null
@@ -145,20 +225,11 @@ export class UsersService {
       last_seen_at: now,
     }
 
-    let { data, error } = await this.supabase.adminClient
+    const { data, error } = await this.supabase.adminClient
       .from('profiles')
       .insert(payload)
       .select(PROFILE_COLUMNS)
       .single()
-
-    if (error && isMissingColumnError(error, ['nickname'])) {
-      const { nickname: _nickname, ...fallbackPayload } = payload
-      ;({ data, error } = await this.supabase.adminClient
-        .from('profiles')
-        .insert(fallbackPayload)
-        .select(PROFILE_COLUMNS_WITHOUT_NICKNAME)
-        .single())
-    }
 
     if (error?.code === UNIQUE_VIOLATION) {
       const existingProfile = await this.readProfile(userId)
@@ -200,26 +271,12 @@ export class UsersService {
       update.avatar_url = candidate.avatarUrl
     }
 
-    let { data, error } = await this.supabase.adminClient
+    const { data, error } = await this.supabase.adminClient
       .from('profiles')
       .update(update)
       .eq('user_id', profile.user_id)
       .select(PROFILE_COLUMNS)
       .single()
-
-    if (
-      error &&
-      isMissingColumnError(error, ['nickname', 'nickname_updated_at'])
-    ) {
-      delete update.nickname
-      delete update.nickname_updated_at
-      ;({ data, error } = await this.supabase.adminClient
-        .from('profiles')
-        .update(update)
-        .eq('user_id', profile.user_id)
-        .select(PROFILE_COLUMNS_WITHOUT_NICKNAME)
-        .single())
-    }
 
     if (error) throw error
     return normalizeProfileRow(data)
@@ -293,4 +350,27 @@ function normalizeProfileRow(row: ProfileRow | null): ProfileRow {
     ...row,
     nickname: row.nickname ?? null,
   }
+}
+
+function ageFromBirthDate(birthDate: string): number | null {
+  const parsed = new Date(`${birthDate}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime())) return null
+  // 잘못된 날짜의 롤오버 방지 (예: '2001-02-29' → 2001-03-01). 컨트롤러 z.iso.date()와
+  // 별개로 서비스 자체에서도 방어한다.
+  if (parsed.toISOString().slice(0, 10) !== birthDate) return null
+  return calculateAge(parsed)
+}
+
+function grantedConsentRows(
+  userId: string,
+  consents: CompleteSignupInput['consents'],
+  acceptedAt: string,
+) {
+  return CONSENT_TYPES.filter((type) => consents[type]).map((type) => ({
+    user_id: userId,
+    consent_type: type,
+    version: CURRENT_CONSENT_VERSIONS[type],
+    accepted_at: acceptedAt,
+    source: CONSENT_SOURCE_SIGNUP,
+  }))
 }
