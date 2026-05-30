@@ -1,14 +1,16 @@
 # Supabase 스키마 스냅샷 (Phase 0 진단 결과)
 
 ```
-조사일:   2026-05-29 KST
+조사일:   2026-05-31 KST
 방법:     PostgREST OpenAPI + 직접 SQL 진단(psql, ap-south-1 풀러)
 프로젝트:  wtptvgxyqkqqsfkdsoox (리전: ap-south-1)
-정식 덤프: supabase/migrations/0001_remote_baseline.sql (pg_dump --schema-only, 983줄)
+정식 덤프: supabase/migrations/0001_remote_baseline.sql (초기화 기준 schema-only baseline, 1150줄)
 진단 도구: scripts/introspect-schema.mjs(REST), scripts/introspect.sql(psql)
 ```
 
 > **Phase 0 완료.** 컬럼·타입·RLS·FK·CHECK·트리거까지 전부 실측 확정.
+> 현재 서비스는 운영 중이 아니므로 별도 운영 마이그레이션, backfill, 레거시 데이터 호환 fallback은 만들지 않는다.
+> DB는 `0001_remote_baseline.sql` 기준으로 초기화해 최신 API 스키마와 맞춘다.
 
 ---
 
@@ -17,7 +19,58 @@
 테이블: `board_cells, boards, clips, guest_clip_uploads, guest_photo_uploads,
 photos, profiles, shares, user_consents`
 뷰: `shared_board_view`
-함수: `require_current_consents_for_signup()`, `set_updated_at()`
+함수: `require_current_consents_for_signup()`, `set_updated_at()`,
+`confirm_user_photo_upload()`, `confirm_user_clip_upload()`
+
+## media / mission board 기준 스키마 (현행 목표)
+
+### 전제
+- 저장소는 R2 전용이다. `storage_provider`는 모든 신규 media 행에서 `r2`만 허용한다.
+- Supabase Storage legacy bucket(`photos-private`, `clips-private`) 경로와 missing-column fallback은 사용하지 않는다.
+- 운영 중 서비스가 아니므로 과거 데이터 승격, 복구, 마이그레이션 대응은 하지 않는다.
+
+### boards
+
+| 컬럼 | 타입 | NULL | 기본값 |
+|---|---|---|---|
+| board_kind | text | NO | `mission` (CHECK ∈ {mission, custom}) |
+| title | text | YES | — |
+| description | text | YES | — |
+| deleted_at | timestamptz | YES | — |
+
+### board_cells
+
+| 컬럼 | 타입 | NULL | 비고 |
+|---|---|---|---|
+| clip_id | uuid | YES | FK→clips, ON DELETE SET NULL |
+| completed_at | timestamptz | YES | 완료 시각 |
+| completion_type | text | YES | CHECK ∈ {photo, no_photo, clip, no_media, free} |
+| mission_snapshot | jsonb | YES | 셀별 미션 스냅샷 |
+
+- `photo_id`와 `clip_id`는 동시에 채울 수 없다(`board_cells_single_media_check`).
+
+### photos / clips
+
+| 테이블 | 필수 저장소 컬럼 |
+|---|---|
+| photos | `storage_provider`, `bucket_name`, `object_etag` |
+| clips | `storage_provider`, `bucket_name`, `object_etag`, `poster_object_etag`, `description` |
+
+### guest uploads
+
+| 테이블 | 필수 저장소/보드 컬럼 |
+|---|---|
+| guest_photo_uploads | `storage_provider`, `bucket_name`, `object_etag` |
+| guest_clip_uploads | `storage_provider`, `bucket_name`, `object_etag`, `poster_object_etag`, `board_kind`, `title`, `description`, `mission_snapshots`, `clip_description` |
+
+- 게스트 영상 승격 후 원본 guest 행은 `upload_status='promoted'`, `promoted_*`, `promoted_at`, `deleted_at`을 함께 기록한다.
+- preview 대상은 업로드 완료 상태이고 삭제·만료되지 않은 행만 허용한다.
+- 사용자 photo/clip confirm은 DB 함수(`confirm_user_photo_upload`, `confirm_user_clip_upload`)로 media row, `board_cells`, `boards.updated_at`을 같은 DB 트랜잭션에서 확정한다.
+- confirm DB 함수는 service-role 전용이다. `auth.role()='service_role'`을 검증하고 `PUBLIC` 실행 권한을 제거한다.
+- guest photo promotion은 기존 보드가 있으면 메타데이터/미션 스냅샷을 덮어쓰지 않고 cell 검증 후 연결만 수행한다.
+- stale authenticated upload cleanup은 DB에서 cleanup 대상을 먼저 claim한 뒤 R2 객체를 삭제하고, R2 실패 시 retry 가능하도록 claim을 되돌린다.
+- expired guest upload cleanup도 DB에서 먼저 `expired`로 claim한 뒤 R2 객체를 삭제하고, R2 실패 시 직전 상태로 되돌린다.
+- mission board 복구는 완전한 `mission_snapshot`을 요구한다. 누락된 셀/스냅샷을 placeholder로 합성하지 않는다.
 
 ## profiles (실측)
 

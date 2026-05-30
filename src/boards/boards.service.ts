@@ -1,14 +1,13 @@
-import { Injectable } from '@nestjs/common'
+import { BadRequestException, Injectable } from '@nestjs/common'
 
 import type {
   BoardSessionInput,
   BoardSnapshotInput,
 } from '@/boards/boards.schemas'
+import { boardSizeForMode } from '@/boards/boards.schemas'
 import { SIGNED_PREVIEW_EXPIRES_SECONDS } from '@/media/media.constants'
 import { signedUrlExpiresAt } from '@/media/media.utils'
-import { STORAGE_PROVIDER_R2 } from '@/storage/storage.constants'
 import { R2Service } from '@/storage/r2.service'
-import { isMissingColumnError } from '@/supabase/supabase.errors'
 import { SupabaseService } from '@/supabase/supabase.service'
 
 type BoardMode = '5x5' | '3x3'
@@ -95,59 +94,18 @@ interface ClipRow {
 }
 
 const MISSION_CATALOG_VERSION = 'api-migration-v1'
-const PHOTO_BUCKET = 'photos-private'
-const CLIP_BUCKET = 'clips-private'
-
-const BOARD_CELL_EXTENDED_COLUMNS = [
-  'clip_id',
-  'completed_at',
-  'completion_type',
-  'mission_label',
-  'mission_capture_label',
-  'mission_category',
-  'mission_caption',
-  'mission_hint',
-  'mission_icon',
-  'mission_snapshot',
-  'mission_catalog_version',
-] as const
-
-const BOARD_METADATA_COLUMNS = ['board_kind', 'title', 'description'] as const
-
-const BOARD_HISTORY_FALLBACK_COLUMNS = [
-  'deleted_at',
-  ...BOARD_METADATA_COLUMNS,
-] as const
 
 const BOARD_CELL_EXTENDED_SELECT =
   'board_id, position, cell_id, photo_id, clip_id, marked_at, completed_at, completion_type, mission_label, mission_capture_label, mission_category, mission_snapshot, mission_catalog_version'
 
-const BOARD_CELL_BASE_SELECT =
-  'board_id, position, cell_id, photo_id, marked_at'
-
 const PHOTO_HISTORY_SELECT =
   'id, user_id, board_id, position, cell_id, storage_path, storage_provider, bucket_name, uploaded_at, captured_at, deleted_at'
-
-const PHOTO_HISTORY_NO_CAPTURED_SELECT =
-  'id, user_id, board_id, position, cell_id, storage_path, storage_provider, bucket_name, uploaded_at, deleted_at'
-
-const PHOTO_HISTORY_LEGACY_SELECT =
-  'id, user_id, board_id, position, cell_id, storage_path, uploaded_at, deleted_at'
 
 const CLIP_HISTORY_SELECT =
   'id, user_id, board_id, position, cell_id, storage_path, poster_storage_path, storage_provider, bucket_name, duration_ms, uploaded_at, recorded_at, description, deleted_at'
 
-const CLIP_HISTORY_NO_DESCRIPTION_SELECT =
-  'id, user_id, board_id, position, cell_id, storage_path, poster_storage_path, storage_provider, bucket_name, duration_ms, uploaded_at, recorded_at, deleted_at'
-
-const CLIP_HISTORY_LEGACY_SELECT =
-  'id, user_id, board_id, position, cell_id, storage_path, poster_storage_path, duration_ms, uploaded_at, recorded_at, deleted_at'
-
 const BOARD_HISTORY_SELECT =
   'id, user_id, mode, board_kind, client_session_id, nickname, title, description, free_position, cell_ids, created_at, updated_at, ended_at, deleted_at'
-
-const BOARD_HISTORY_BASE_SELECT =
-  'id, user_id, mode, client_session_id, nickname, free_position, cell_ids, created_at, updated_at, ended_at'
 
 function boardKindFor(input: BoardSnapshotInput | BoardRow): BoardKind {
   const snapshot = input as Partial<BoardSnapshotInput>
@@ -179,7 +137,7 @@ function makeSeedRecipe(input: BoardSnapshotInput) {
   })
 }
 
-function fallbackMissionSnapshot(cellId: string): MissionSnapshot {
+function defaultMissionSnapshot(cellId: string): MissionSnapshot {
   return {
     id: cellId,
     category: 'special',
@@ -189,51 +147,89 @@ function fallbackMissionSnapshot(cellId: string): MissionSnapshot {
   }
 }
 
-function missionSnapshotFor(cellId: string) {
-  return fallbackMissionSnapshot(cellId)
-}
-
 function boardCellSnapshotPayload(
   boardId: string,
   position: number,
   cellId: string,
   missionSnapshot?: MissionSnapshot,
 ) {
-  const mission = missionSnapshot ?? missionSnapshotFor(cellId)
+  const mission = missionSnapshot ?? null
 
   return {
     board_id: boardId,
     position,
     cell_id: cellId,
-    mission_label: mission.label,
-    mission_capture_label: mission.captureLabel ?? mission.label,
-    mission_category: mission.category,
-    mission_caption: mission.caption ?? null,
-    mission_hint: mission.hint ?? null,
-    mission_icon: mission.icon,
+    mission_label: mission?.label ?? null,
+    mission_capture_label: mission?.captureLabel ?? mission?.label ?? null,
+    mission_category: mission?.category ?? null,
+    mission_caption: mission?.caption ?? null,
+    mission_hint: mission?.hint ?? null,
+    mission_icon: mission?.icon ?? null,
     mission_snapshot: mission,
     mission_catalog_version: MISSION_CATALOG_VERSION,
   }
 }
 
-function boardCellBasePayload(
-  boardId: string,
-  position: number,
-  cellId: string,
-) {
-  return {
-    board_id: boardId,
-    position,
-    cell_id: cellId,
+function boardUpdatedAt(board: BoardRow) {
+  return board.updated_at ?? board.created_at
+}
+
+function validateBoardSnapshotInput(input: BoardSnapshotInput) {
+  const boardSize = boardSizeForMode(input.mode)
+  const requiresMissionSnapshots = boardKindFor(input) === 'mission'
+
+  if (input.cellIds.length !== boardSize) {
+    throw new BadRequestException(
+      `${input.mode} board must contain exactly ${boardSize} cells.`,
+    )
+  }
+
+  if (input.freePosition >= boardSize) {
+    throw new BadRequestException('freePosition is outside the board.')
+  }
+
+  if (requiresMissionSnapshots && !input.missionSnapshots?.length) {
+    throw new BadRequestException(
+      'Mission boards require complete mission snapshots.',
+    )
+  }
+
+  if (input.missionSnapshots?.length) {
+    if (input.missionSnapshots.length !== boardSize) {
+      throw new BadRequestException(
+        'missionSnapshots length must match the board size.',
+      )
+    }
+
+    input.missionSnapshots.forEach((snapshot, position) => {
+      if (snapshot.id !== input.cellIds[position]) {
+        throw new BadRequestException(
+          'Mission snapshot id must match the cell id at the same position.',
+        )
+      }
+    })
   }
 }
 
-function isR2Object(row?: { storage_provider?: string | null }) {
-  return row?.storage_provider === STORAGE_PROVIDER_R2
-}
+function validateBoardMediaCell(params: {
+  board: Pick<BoardRow, 'mode' | 'cell_ids' | 'free_position'>
+  position: number
+  cellId: string
+}) {
+  const boardSize = boardSizeForMode(params.board.mode)
+  const cellIds = params.board.cell_ids ?? []
 
-function boardUpdatedAt(board: BoardRow) {
-  return board.updated_at ?? board.created_at
+  if (cellIds.length !== boardSize) {
+    throw new BadRequestException('Board snapshot is incomplete.')
+  }
+
+  if (params.position >= boardSize || params.position < 0) {
+    throw new BadRequestException('Position is outside the board.')
+  }
+
+  if (cellIds[params.position] !== params.cellId) {
+    throw new BadRequestException('cellId must match the board position.')
+  }
 }
 
 function isRestorableBoardMode(
@@ -271,11 +267,22 @@ function toHistoryItem(board: BoardRow, cells: readonly BoardCellRow[]) {
   }
 }
 
-function detailCellFromRow(row: BoardCellRow, photo: unknown, clip: unknown) {
+function detailCellMission(board: BoardRow, row: BoardCellRow) {
+  if (row.mission_snapshot) return row.mission_snapshot
+  if (boardKindFor(board) === 'custom') return defaultMissionSnapshot(row.cell_id)
+  return null
+}
+
+function detailCellFromRow(
+  board: BoardRow,
+  row: BoardCellRow,
+  photo: unknown,
+  clip: unknown,
+) {
   return {
     position: row.position,
     cellId: row.cell_id,
-    mission: row.mission_snapshot ?? missionSnapshotFor(row.cell_id),
+    mission: detailCellMission(board, row),
     markedAt: row.marked_at,
     completedAt: row.completed_at ?? null,
     completionType: row.completion_type ?? null,
@@ -296,6 +303,7 @@ export class BoardsService {
   }
 
   async ensureUserBoard(userId: string, input: BoardSnapshotInput) {
+    validateBoardSnapshotInput(input)
     const now = new Date().toISOString()
     const existingResult = await this.admin
       .from('boards')
@@ -380,11 +388,117 @@ export class BoardsService {
     return inserted.id
   }
 
+  async ensureUserBoardForMedia(
+    userId: string,
+    input: {
+      clientBoardSessionId: string
+      mode: BoardMode
+      position: number
+      cellId: string
+    },
+  ) {
+    const { data, error } = await this.admin
+      .from('boards')
+      .select('id, user_id, mode, cell_ids, free_position')
+      .eq('user_id', userId)
+      .eq('client_session_id', input.clientBoardSessionId)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (error) throw error
+    const board = data as BoardRow | null
+
+    if (!board) {
+      throw new BadRequestException(
+        'Board session must be saved before media upload.',
+      )
+    }
+
+    if (board.mode !== input.mode) {
+      throw new BadRequestException('Board mode does not match the session.')
+    }
+
+    validateBoardMediaCell({
+      board,
+      position: input.position,
+      cellId: input.cellId,
+    })
+
+    return board.id
+  }
+
+  async ensureUserBoardForGuestPhotoPromotion(
+    userId: string,
+    input: {
+      clientBoardSessionId: string
+      mode: BoardMode
+      nickname: string
+      freePosition: number
+      cellIds: string[]
+      position: number
+      cellId: string
+    },
+  ) {
+    validateBoardMediaCell({
+      board: {
+        mode: input.mode,
+        cell_ids: input.cellIds,
+        free_position: input.freePosition,
+      },
+      position: input.position,
+      cellId: input.cellId,
+    })
+
+    const { data, error } = await this.admin
+      .from('boards')
+      .select('id, user_id, mode, cell_ids, free_position')
+      .eq('user_id', userId)
+      .eq('client_session_id', input.clientBoardSessionId)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (error) throw error
+    const board = data as BoardRow | null
+
+    if (board) {
+      if (board.mode !== input.mode) {
+        throw new BadRequestException('Board mode does not match the session.')
+      }
+
+      validateBoardMediaCell({
+        board,
+        position: input.position,
+        cellId: input.cellId,
+      })
+
+      return board.id
+    }
+
+    return this.ensureUserBoard(userId, {
+      clientBoardSessionId: input.clientBoardSessionId,
+      mode: input.mode,
+      boardKind: 'custom',
+      nickname: input.nickname,
+      title: input.nickname,
+      freePosition: input.freePosition,
+      cellIds: input.cellIds,
+    })
+  }
+
+  async touchUserBoard(boardId: string) {
+    const { error } = await this.admin
+      .from('boards')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', boardId)
+
+    if (error) throw error
+  }
+
   async ensureUserBoardFromSession(userId: string, session: BoardSessionInput) {
     const boardId = await this.ensureUserBoard(userId, {
       clientBoardSessionId: session.sessionId,
       mode: session.mode,
-      boardKind: session.version === 4 ? session.boardKind : 'mission',
+      boardKind: session.version === 4 ? session.boardKind : 'custom',
       nickname: session.nickname,
       title: session.version === 4 ? session.title : session.nickname,
       description: session.version === 4 ? session.description : undefined,
@@ -417,24 +531,15 @@ export class BoardsService {
     )
     if (rows.length === 0) return
 
-    let { error } = await this.admin
+    const { error } = await this.admin
       .from('board_cells')
       .upsert(rows, { onConflict: 'board_id,position' })
-
-    if (error && isMissingColumnError(error, BOARD_CELL_EXTENDED_COLUMNS)) {
-      ;({ error } = await this.admin.from('board_cells').upsert(
-        input.cellIds.map((cellId, position) =>
-          boardCellBasePayload(boardId, position, cellId),
-        ),
-        { onConflict: 'board_id,position' },
-      ))
-    }
 
     if (error) throw error
   }
 
   async listUserBoards(userId: string) {
-    let { data: boards, error: boardError } = await this.admin
+    const { data: boards, error: boardError } = await this.admin
       .from('boards')
       .select(BOARD_HISTORY_SELECT)
       .eq('user_id', userId)
@@ -442,20 +547,6 @@ export class BoardsService {
       .not('client_session_id', 'is', null)
       .order('updated_at', { ascending: false })
       .limit(50)
-
-    if (
-      boardError &&
-      isMissingColumnError(boardError, BOARD_HISTORY_FALLBACK_COLUMNS)
-    ) {
-      ;({ data: boards, error: boardError } = await this.admin
-        .from('boards')
-        .select(BOARD_HISTORY_BASE_SELECT)
-        .eq('user_id', userId)
-        .is('deleted_at', null)
-        .not('client_session_id', 'is', null)
-        .order('updated_at', { ascending: false })
-        .limit(50))
-    }
 
     if (boardError) throw boardError
     if (!boards?.length) return []
@@ -491,6 +582,8 @@ export class BoardsService {
     let cells = await this.getBoardCellsForBoard(board.id)
 
     if (!cells.length) {
+      if (boardKindFor(board) === 'mission') return null
+
       await this.upsertBoardCellSnapshots(board.id, {
         cellIds: board.cell_ids,
         missionSnapshots: [],
@@ -552,7 +645,7 @@ export class BoardsService {
         })()
 
         const [photo, clip] = await Promise.all([photoPromise, clipPromise])
-        return detailCellFromRow(cell, photo, clip)
+        return detailCellFromRow(board, cell, photo, clip)
       }),
     )
     const item = toHistoryItem(board, cells)
@@ -584,10 +677,12 @@ export class BoardsService {
     if (boardError) throw boardError
     if (!board) return false
 
-    let { error } = await this.admin
+    const { error } = await this.admin
       .from('board_cells')
       .update({
         cell_id: params.cellId,
+        photo_id: null,
+        clip_id: null,
         marked_at: completedAt,
         completed_at: completedAt,
         completion_type: params.marked ? 'no_media' : null,
@@ -595,18 +690,6 @@ export class BoardsService {
       .eq('board_id', params.boardId)
       .eq('position', params.position)
       .eq('cell_id', params.cellId)
-
-    if (error && isMissingColumnError(error, BOARD_CELL_EXTENDED_COLUMNS)) {
-      ;({ error } = await this.admin
-        .from('board_cells')
-        .update({
-          cell_id: params.cellId,
-          marked_at: completedAt,
-        })
-        .eq('board_id', params.boardId)
-        .eq('position', params.position)
-        .eq('cell_id', params.cellId))
-    }
 
     if (error) throw error
 
@@ -636,7 +719,7 @@ export class BoardsService {
     if (boardError) throw boardError
     if (!board) return false
 
-    let { error } = await this.admin.from('board_cells').upsert(
+    const { error } = await this.admin.from('board_cells').upsert(
       {
         ...boardCellSnapshotPayload(
           params.boardId,
@@ -651,21 +734,6 @@ export class BoardsService {
       },
       { onConflict: 'board_id,position' },
     )
-
-    if (error && isMissingColumnError(error, BOARD_CELL_EXTENDED_COLUMNS)) {
-      ;({ error } = await this.admin.from('board_cells').upsert(
-        {
-          ...boardCellBasePayload(
-            params.boardId,
-            params.position,
-            params.cellId,
-          ),
-          photo_id: null,
-          marked_at: null,
-        },
-        { onConflict: 'board_id,position' },
-      ))
-    }
 
     if (error) throw error
 
@@ -695,23 +763,13 @@ export class BoardsService {
 
   async deleteUserBoard(userId: string, boardId: string) {
     const now = new Date().toISOString()
-    let { data, error } = await this.admin
+    const { data, error } = await this.admin
       .from('boards')
       .update({ deleted_at: now, updated_at: now })
       .eq('id', boardId)
       .eq('user_id', userId)
       .select('id')
       .maybeSingle()
-
-    if (error && isMissingColumnError(error, ['deleted_at'])) {
-      ;({ data, error } = await this.admin
-        .from('boards')
-        .delete()
-        .eq('id', boardId)
-        .eq('user_id', userId)
-        .select('id')
-        .maybeSingle())
-    }
 
     if (error) throw error
     return Boolean(data)
@@ -722,7 +780,7 @@ export class BoardsService {
   }
 
   async getLatestUserBoardSession(userId: string) {
-    let { data: board, error: boardError } = await this.admin
+    const { data: board, error: boardError } = await this.admin
       .from('boards')
       .select(BOARD_HISTORY_SELECT)
       .eq('user_id', userId)
@@ -733,23 +791,6 @@ export class BoardsService {
       .order('updated_at', { ascending: false })
       .limit(1)
       .maybeSingle()
-
-    if (
-      boardError &&
-      isMissingColumnError(boardError, BOARD_HISTORY_FALLBACK_COLUMNS)
-    ) {
-      ;({ data: board, error: boardError } = await this.admin
-        .from('boards')
-        .select(BOARD_HISTORY_BASE_SELECT)
-        .eq('user_id', userId)
-        .is('ended_at', null)
-        .is('deleted_at', null)
-        .not('client_session_id', 'is', null)
-        .not('cell_ids', 'is', null)
-        .order('updated_at', { ascending: false })
-        .limit(1)
-        .maybeSingle())
-    }
 
     if (boardError) throw boardError
     const row = board as BoardRow | null
@@ -777,11 +818,11 @@ export class BoardsService {
 
     const markedPositions = new Set<number>()
     const snapshotsByPosition = new Map(
-      cells.map((cell) => [
-        cell.position,
-        cell.mission_snapshot ?? missionSnapshotFor(cell.cell_id),
-      ]),
+      cells
+        .filter((cell) => Boolean(cell.mission_snapshot))
+        .map((cell) => [cell.position, cell.mission_snapshot as MissionSnapshot]),
     )
+    const boardKind = boardKindFor(row)
 
     cells.forEach((cell) => {
       if (cell.marked_at && !cell.clip_id) markedPositions.add(cell.position)
@@ -817,12 +858,19 @@ export class BoardsService {
       )
     ).filter(Boolean)
 
+    if (
+      boardKind === 'mission' &&
+      row.cell_ids.some((_, position) => !snapshotsByPosition.get(position))
+    ) {
+      return null
+    }
+
     return {
       version: 4,
       boardId: row.id,
       sessionId: row.client_session_id,
       mode: row.mode,
-      boardKind: boardKindFor(row),
+      boardKind,
       nickname: row.nickname,
       title: boardTitleFor(row),
       description: boardDescriptionFor(row),
@@ -830,9 +878,10 @@ export class BoardsService {
       updatedAt: row.updated_at ?? row.created_at ?? new Date().toISOString(),
       freePosition: row.free_position,
       cellIds: row.cell_ids,
-      missionSnapshots: row.cell_ids.map(
-        (cellId, position) =>
-          snapshotsByPosition.get(position) ?? missionSnapshotFor(cellId),
+      missionSnapshots: row.cell_ids.map((cellId, position) =>
+        boardKind === 'custom'
+          ? (snapshotsByPosition.get(position) ?? defaultMissionSnapshot(cellId))
+          : snapshotsByPosition.get(position),
       ),
       markedPositions: Array.from(markedPositions).sort((a, b) => a - b),
       clips,
@@ -858,7 +907,7 @@ export class BoardsService {
       clientBoardSessionId: params.session.sessionId,
       mode: params.session.mode,
       boardKind:
-        params.session.version === 4 ? params.session.boardKind : 'mission',
+        params.session.version === 4 ? params.session.boardKind : 'custom',
       nickname: params.session.nickname,
       title:
         params.session.version === 4
@@ -898,7 +947,7 @@ export class BoardsService {
   }
 
   private async getBoardForUser(userId: string, boardId: string) {
-    let { data, error } = await this.admin
+    const { data, error } = await this.admin
       .from('boards')
       .select(BOARD_HISTORY_SELECT)
       .eq('id', boardId)
@@ -906,58 +955,33 @@ export class BoardsService {
       .is('deleted_at', null)
       .maybeSingle()
 
-    if (error && isMissingColumnError(error, BOARD_HISTORY_FALLBACK_COLUMNS)) {
-      ;({ data, error } = await this.admin
-        .from('boards')
-        .select(BOARD_HISTORY_BASE_SELECT)
-        .eq('id', boardId)
-        .eq('user_id', userId)
-        .is('deleted_at', null)
-        .maybeSingle())
-    }
-
     if (error) throw error
     return data as BoardRow | null
   }
 
   private async getBoardCellsForBoards(boardIds: readonly string[]) {
-    let { data, error } = await this.admin
+    const { data, error } = await this.admin
       .from('board_cells')
       .select(BOARD_CELL_EXTENDED_SELECT)
       .in('board_id', boardIds)
-
-    if (error && isMissingColumnError(error, BOARD_CELL_EXTENDED_COLUMNS)) {
-      ;({ data, error } = await this.admin
-        .from('board_cells')
-        .select(BOARD_CELL_BASE_SELECT)
-        .in('board_id', boardIds))
-    }
 
     if (error) throw error
     return (data ?? []) as BoardCellRow[]
   }
 
   private async getBoardCellsForBoard(boardId: string) {
-    let { data, error } = await this.admin
+    const { data, error } = await this.admin
       .from('board_cells')
       .select(BOARD_CELL_EXTENDED_SELECT)
       .eq('board_id', boardId)
       .order('position', { ascending: true })
-
-    if (error && isMissingColumnError(error, BOARD_CELL_EXTENDED_COLUMNS)) {
-      ;({ data, error } = await this.admin
-        .from('board_cells')
-        .select(BOARD_CELL_BASE_SELECT)
-        .eq('board_id', boardId)
-        .order('position', { ascending: true }))
-    }
 
     if (error) throw error
     return (data ?? []) as BoardCellRow[]
   }
 
   private async getHistoryPhotos(userId: string, photoIds: readonly string[]) {
-    let { data, error } = await this.admin
+    const { data, error } = await this.admin
       .from('photos')
       .select(PHOTO_HISTORY_SELECT)
       .eq('user_id', userId)
@@ -965,64 +989,18 @@ export class BoardsService {
       .not('uploaded_at', 'is', null)
       .is('deleted_at', null)
 
-    if (
-      error &&
-      isMissingColumnError(error, ['storage_provider', 'bucket_name'])
-    ) {
-      ;({ data, error } = await this.admin
-        .from('photos')
-        .select(PHOTO_HISTORY_LEGACY_SELECT)
-        .eq('user_id', userId)
-        .in('id', photoIds)
-        .not('uploaded_at', 'is', null)
-        .is('deleted_at', null))
-    }
-
-    if (error && isMissingColumnError(error, ['captured_at'])) {
-      ;({ data, error } = await this.admin
-        .from('photos')
-        .select(PHOTO_HISTORY_NO_CAPTURED_SELECT)
-        .eq('user_id', userId)
-        .in('id', photoIds)
-        .not('uploaded_at', 'is', null)
-        .is('deleted_at', null))
-    }
-
     if (error) throw error
     return (data ?? []) as PhotoRow[]
   }
 
   private async getHistoryClips(userId: string, clipIds: readonly string[]) {
-    let { data, error } = await this.admin
+    const { data, error } = await this.admin
       .from('clips')
       .select(CLIP_HISTORY_SELECT)
       .eq('user_id', userId)
       .in('id', clipIds)
       .not('uploaded_at', 'is', null)
       .is('deleted_at', null)
-
-    if (
-      error &&
-      isMissingColumnError(error, ['storage_provider', 'bucket_name'])
-    ) {
-      ;({ data, error } = await this.admin
-        .from('clips')
-        .select(CLIP_HISTORY_LEGACY_SELECT)
-        .eq('user_id', userId)
-        .in('id', clipIds)
-        .not('uploaded_at', 'is', null)
-        .is('deleted_at', null))
-    }
-
-    if (error && isMissingColumnError(error, ['description'])) {
-      ;({ data, error } = await this.admin
-        .from('clips')
-        .select(CLIP_HISTORY_NO_DESCRIPTION_SELECT)
-        .eq('user_id', userId)
-        .in('id', clipIds)
-        .not('uploaded_at', 'is', null)
-        .is('deleted_at', null))
-    }
 
     if (error) throw error
     return (data ?? []) as ClipRow[]
@@ -1032,24 +1010,12 @@ export class BoardsService {
     path: string,
     object?: { storage_provider?: string | null; bucket_name?: string | null },
   ) {
-    if (isR2Object(object)) {
-      return {
-        previewUrl: await this.r2.createPreviewUrl({
-          objectKey: path,
-          bucketName: object?.bucket_name,
-          expiresInSeconds: SIGNED_PREVIEW_EXPIRES_SECONDS,
-        }),
-        previewUrlExpiresAt: signedUrlExpiresAt(SIGNED_PREVIEW_EXPIRES_SECONDS),
-      }
-    }
-
-    const { data, error } = await this.admin.storage
-      .from(PHOTO_BUCKET)
-      .createSignedUrl(path, SIGNED_PREVIEW_EXPIRES_SECONDS)
-    if (error || !data) throw error ?? new Error('Storage request failed.')
-
     return {
-      previewUrl: data.signedUrl,
+      previewUrl: await this.r2.createPreviewUrl({
+        objectKey: path,
+        bucketName: object?.bucket_name,
+        expiresInSeconds: SIGNED_PREVIEW_EXPIRES_SECONDS,
+      }),
       previewUrlExpiresAt: signedUrlExpiresAt(SIGNED_PREVIEW_EXPIRES_SECONDS),
     }
   }
@@ -1059,47 +1025,23 @@ export class BoardsService {
     posterPath: string,
     object?: { storage_provider?: string | null; bucket_name?: string | null },
   ) {
-    if (isR2Object(object)) {
-      const [clipUrl, posterUrl] = await Promise.all([
-        this.r2.createPreviewUrl({
-          objectKey: clipPath,
-          bucketName: object?.bucket_name,
-          expiresInSeconds: SIGNED_PREVIEW_EXPIRES_SECONDS,
-        }),
-        this.r2.createPreviewUrl({
-          objectKey: posterPath,
-          bucketName: object?.bucket_name,
-          expiresInSeconds: SIGNED_PREVIEW_EXPIRES_SECONDS,
-        }),
-      ])
-
-      return {
-        clipUrl,
-        clipUrlExpiresAt: signedUrlExpiresAt(SIGNED_PREVIEW_EXPIRES_SECONDS),
-        posterUrl,
-        posterUrlExpiresAt: signedUrlExpiresAt(SIGNED_PREVIEW_EXPIRES_SECONDS),
-      }
-    }
-
-    const [clipResult, posterResult] = await Promise.all([
-      this.admin.storage
-        .from(CLIP_BUCKET)
-        .createSignedUrl(clipPath, SIGNED_PREVIEW_EXPIRES_SECONDS),
-      this.admin.storage
-        .from(CLIP_BUCKET)
-        .createSignedUrl(posterPath, SIGNED_PREVIEW_EXPIRES_SECONDS),
+    const [clipUrl, posterUrl] = await Promise.all([
+      this.r2.createPreviewUrl({
+        objectKey: clipPath,
+        bucketName: object?.bucket_name,
+        expiresInSeconds: SIGNED_PREVIEW_EXPIRES_SECONDS,
+      }),
+      this.r2.createPreviewUrl({
+        objectKey: posterPath,
+        bucketName: object?.bucket_name,
+        expiresInSeconds: SIGNED_PREVIEW_EXPIRES_SECONDS,
+      }),
     ])
-    if (clipResult.error || !clipResult.data) {
-      throw clipResult.error ?? new Error('Storage request failed.')
-    }
-    if (posterResult.error || !posterResult.data) {
-      throw posterResult.error ?? new Error('Storage request failed.')
-    }
 
     return {
-      clipUrl: clipResult.data.signedUrl,
+      clipUrl,
       clipUrlExpiresAt: signedUrlExpiresAt(SIGNED_PREVIEW_EXPIRES_SECONDS),
-      posterUrl: posterResult.data.signedUrl,
+      posterUrl,
       posterUrlExpiresAt: signedUrlExpiresAt(SIGNED_PREVIEW_EXPIRES_SECONDS),
     }
   }
@@ -1129,21 +1071,9 @@ export class BoardsService {
 
     if (!rows.length) return
 
-    let { error } = await this.admin
+    const { error } = await this.admin
       .from('board_cells')
       .upsert(rows, { onConflict: 'board_id,position' })
-
-    if (error && isMissingColumnError(error, BOARD_CELL_EXTENDED_COLUMNS)) {
-      ;({ error } = await this.admin.from('board_cells').upsert(
-        rows.map(({ board_id, position, cell_id, marked_at }) => ({
-          board_id,
-          position,
-          cell_id,
-          marked_at,
-        })),
-        { onConflict: 'board_id,position' },
-      ))
-    }
 
     if (error) throw error
   }
@@ -1165,25 +1095,7 @@ export class BoardsService {
       query = query.neq('client_session_id', exceptClientSessionId)
     }
 
-    let { error } = await query
-
-    if (error && isMissingColumnError(error, ['deleted_at'])) {
-      let fallbackQuery = this.admin
-        .from('boards')
-        .delete()
-        .eq('user_id', userId)
-        .is('ended_at', null)
-        .not('client_session_id', 'is', null)
-
-      if (exceptClientSessionId) {
-        fallbackQuery = fallbackQuery.neq(
-          'client_session_id',
-          exceptClientSessionId,
-        )
-      }
-
-      ;({ error } = await fallbackQuery)
-    }
+    const { error } = await query
 
     if (error) throw error
   }
@@ -1200,7 +1112,7 @@ export class BoardsService {
     boardId: string,
     clientSessionId: string,
   ) {
-    let { data, error } = await this.admin
+    const { data, error } = await this.admin
       .from('boards')
       .select('id')
       .eq('id', boardId)
@@ -1209,17 +1121,6 @@ export class BoardsService {
       .is('ended_at', null)
       .is('deleted_at', null)
       .maybeSingle()
-
-    if (error && isMissingColumnError(error, ['deleted_at'])) {
-      ;({ data, error } = await this.admin
-        .from('boards')
-        .select('id')
-        .eq('id', boardId)
-        .eq('user_id', userId)
-        .eq('client_session_id', clientSessionId)
-        .is('ended_at', null)
-        .maybeSingle())
-    }
 
     if (error) throw error
     return data
@@ -1259,29 +1160,18 @@ export class BoardsService {
 
       if (!userPhotoId) continue
 
-      let { error } = await this.admin
+      const { error } = await this.admin
         .from('board_cells')
         .update({
           cell_id: cellId,
           photo_id: userPhotoId,
+          clip_id: null,
           marked_at: now,
           completed_at: now,
           completion_type: 'photo',
         })
         .eq('board_id', boardId)
         .eq('position', photo.position)
-
-      if (error && isMissingColumnError(error, BOARD_CELL_EXTENDED_COLUMNS)) {
-        ;({ error } = await this.admin
-          .from('board_cells')
-          .update({
-            cell_id: cellId,
-            photo_id: userPhotoId,
-            marked_at: now,
-          })
-          .eq('board_id', boardId)
-          .eq('position', photo.position))
-      }
 
       if (error) throw error
       adopted.push({
@@ -1333,6 +1223,7 @@ export class BoardsService {
         .from('board_cells')
         .update({
           cell_id: cellId,
+          photo_id: null,
           clip_id: userClipId,
           marked_at: now,
           completed_at: now,

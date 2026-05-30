@@ -43,8 +43,10 @@ interface PhotoRow {
   storage_path: string
   storage_provider?: string | null
   bucket_name?: string | null
+  object_etag?: string | null
   content_type: string
   size_bytes: number
+  uploaded_at?: string | null
 }
 
 interface GuestPhotoUploadRow {
@@ -63,6 +65,7 @@ interface GuestPhotoUploadRow {
   object_etag?: string | null
   content_type: string
   size_bytes: number
+  uploaded_at?: string | null
   upload_status?: string
   expires_at?: string
   promoted_user_id?: string | null
@@ -79,11 +82,13 @@ interface ClipRow {
   poster_storage_path: string | null
   storage_provider?: string | null
   bucket_name?: string | null
+  object_etag?: string | null
   content_type: string
   size_bytes: number
   duration_ms: number
   poster_content_type: string | null
   poster_size_bytes: number | null
+  uploaded_at?: string | null
   description?: string | null
 }
 
@@ -120,24 +125,21 @@ interface GuestClipUploadRow {
   poster_size_bytes: number | null
   poster_width?: number | null
   poster_height?: number | null
+  uploaded_at?: string | null
   upload_status?: string
   expires_at?: string
   promoted_user_id?: string | null
   promoted_clip_id?: string | null
 }
 
-interface StoredObjectRow {
+interface StoredPhotoObjectRow {
   storage_path: string
-  storage_provider?: string | null
   bucket_name?: string | null
 }
 
-interface StoredClipObjectRow extends StoredObjectRow {
+interface StoredClipObjectRow extends StoredPhotoObjectRow {
   poster_storage_path: string | null
 }
-
-const PHOTO_BUCKET = 'photos-private'
-const CLIP_BUCKET = 'clips-private'
 
 function uploadPayload(upload: R2SignedUpload) {
   return {
@@ -156,8 +158,26 @@ function assertUserForOwnerKind(user: User | null, ownerKind: OwnerKind) {
   }
 }
 
-function isR2Object(row: { storage_provider?: string | null }) {
-  return row.storage_provider === STORAGE_PROVIDER_R2
+function assertPreviewableUpload(row: {
+  uploaded_at?: string | null
+  upload_status?: string | null
+  expires_at?: string | null
+}) {
+  if ('upload_status' in row) {
+    if (row.upload_status !== 'uploaded') {
+      throw new NotFoundException('Media not found.')
+    }
+
+    if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
+      throw new NotFoundException('Media not found.')
+    }
+
+    return
+  }
+
+  if (!row.uploaded_at) {
+    throw new NotFoundException('Media not found.')
+  }
 }
 
 @Injectable()
@@ -182,7 +202,7 @@ export class MediaService {
     const ownerKind: OwnerKind = user ? 'user' : 'guest'
     const ext = photoExtFromContentType(input.contentType)
     const boardId = user
-      ? await this.boardsService.ensureUserBoard(user.id, input)
+      ? await this.boardsService.ensureUserBoardForMedia(user.id, input)
       : null
     const objectKey = user
       ? this.r2.userPhotoKey({
@@ -280,25 +300,16 @@ export class MediaService {
         throw new BadRequestException('Photo is missing board metadata.')
       }
 
-      const { error: photoError } = await this.admin
-        .from('photos')
-        .update({ uploaded_at: now, object_etag: metadata.etag })
-        .eq('id', userPhoto.id)
-      if (photoError) throw photoError
-
-      const { error: cellError } = await this.admin.from('board_cells').upsert(
+      const { error: confirmError } = await this.admin.rpc(
+        'confirm_user_photo_upload',
         {
-          board_id: userPhoto.board_id,
-          position: userPhoto.position,
-          cell_id: userPhoto.cell_id,
-          photo_id: userPhoto.id,
-          marked_at: now,
-          completed_at: now,
-          completion_type: 'photo',
+          p_photo_id: userPhoto.id,
+          p_user_id: user!.id,
+          p_object_etag: metadata.etag,
+          p_confirmed_at: now,
         },
-        { onConflict: 'board_id,position' },
       )
-      if (cellError) throw cellError
+      if (confirmError) throw confirmError
     } else {
       const { error } = await this.admin
         .from('guest_photo_uploads')
@@ -326,6 +337,7 @@ export class MediaService {
           photo.ownerKind === 'user'
             ? await this.getUserPhoto(photo.photoId, params.user!.id)
             : await this.getGuestPhoto(photo.photoId, params.guestSessionId)
+        assertPreviewableUpload(row)
         return this.photoPreviewPayload(row, photo.ownerKind, {
           requestedPhotoId: photo.photoId,
           requestedOwnerKind: photo.ownerKind,
@@ -352,10 +364,11 @@ export class MediaService {
     const now = new Date().toISOString()
 
     if (params.ownerKind === 'user') {
+      const userPhoto = row as PhotoRow
       const { error: photoError } = await this.admin
         .from('photos')
         .update({ deleted_at: now })
-        .eq('id', row.id)
+        .eq('id', userPhoto.id)
       if (photoError) throw photoError
 
       const { error: cellError } = await this.admin
@@ -366,8 +379,11 @@ export class MediaService {
           completed_at: null,
           completion_type: null,
         })
-        .eq('photo_id', row.id)
+        .eq('photo_id', userPhoto.id)
       if (cellError) throw cellError
+      if (userPhoto.board_id) {
+        await this.boardsService.touchUserBoard(userPhoto.board_id)
+      }
     } else {
       const { error } = await this.admin
         .from('guest_photo_uploads')
@@ -390,7 +406,7 @@ export class MediaService {
     const clipExt = clipExtFromContentType(input.contentType)
     const posterExt = posterExtFromContentType(input.posterContentType)
     const boardId = user
-      ? await this.boardsService.ensureUserBoard(user.id, input)
+      ? await this.boardsService.ensureUserBoardForMedia(user.id, input)
       : null
     const clipKey = user
       ? this.r2.userClipKey({
@@ -469,11 +485,11 @@ export class MediaService {
         guest_session_id: guestSessionId,
         client_board_session_id: input.clientBoardSessionId,
         mode: input.mode,
-        board_kind: input.boardKind ?? 'mission',
+        board_kind: input.boardKind,
         nickname: input.nickname,
-        title: input.title ?? input.nickname,
+        title: input.title,
         description: input.description ?? null,
-        mission_snapshots: input.missionSnapshots ?? null,
+        mission_snapshots: input.missionSnapshots,
         free_position: input.freePosition,
         cell_ids: input.cellIds,
         position: input.position,
@@ -556,30 +572,17 @@ export class MediaService {
         throw new BadRequestException('Clip is missing board metadata.')
       }
 
-      const { error: clipError } = await this.admin
-        .from('clips')
-        .update({
-          uploaded_at: now,
-          poster_uploaded_at: now,
-          object_etag: clipMetadata.etag,
-          poster_object_etag: posterMetadata.etag,
-        })
-        .eq('id', userClip.id)
-      if (clipError) throw clipError
-
-      const { error: cellError } = await this.admin.from('board_cells').upsert(
+      const { error: confirmError } = await this.admin.rpc(
+        'confirm_user_clip_upload',
         {
-          board_id: userClip.board_id,
-          position: userClip.position,
-          cell_id: userClip.cell_id,
-          clip_id: userClip.id,
-          marked_at: now,
-          completed_at: now,
-          completion_type: 'clip',
+          p_clip_id: userClip.id,
+          p_user_id: user!.id,
+          p_object_etag: clipMetadata.etag,
+          p_poster_object_etag: posterMetadata.etag,
+          p_confirmed_at: now,
         },
-        { onConflict: 'board_id,position' },
       )
-      if (cellError) throw cellError
+      if (confirmError) throw confirmError
     } else {
       const { error } = await this.admin
         .from('guest_clip_uploads')
@@ -609,6 +612,7 @@ export class MediaService {
           clip.ownerKind === 'user'
             ? await this.getUserClip(clip.clipId, params.user!.id)
             : await this.getGuestClip(clip.clipId, params.guestSessionId)
+        assertPreviewableUpload(row)
         return this.clipPreviewPayload(row, clip.ownerKind, {
           requestedClipId: clip.clipId,
           requestedOwnerKind: clip.ownerKind,
@@ -642,6 +646,14 @@ export class MediaService {
       .update(update)
       .eq('id', row.id)
     if (error) throw error
+
+    if (params.input.ownerKind === 'user') {
+      const userClip = row as ClipRow
+      if (!userClip.board_id) {
+        throw new BadRequestException('Clip is missing board metadata.')
+      }
+      await this.boardsService.touchUserBoard(userClip.board_id)
+    }
 
     if (
       params.input.ownerKind === 'guest' &&
@@ -686,10 +698,11 @@ export class MediaService {
     const now = new Date().toISOString()
 
     if (params.ownerKind === 'user') {
+      const userClip = row as ClipRow
       const { error: clipError } = await this.admin
         .from('clips')
         .update({ deleted_at: now })
-        .eq('id', row.id)
+        .eq('id', userClip.id)
       if (clipError) throw clipError
 
       const { error: cellError } = await this.admin
@@ -700,8 +713,11 @@ export class MediaService {
           completed_at: null,
           completion_type: null,
         })
-        .eq('clip_id', row.id)
+        .eq('clip_id', userClip.id)
       if (cellError) throw cellError
+      if (userClip.board_id) {
+        await this.boardsService.touchUserBoard(userClip.board_id)
+      }
     } else {
       const { error } = await this.admin
         .from('guest_clip_uploads')
@@ -743,30 +759,31 @@ export class MediaService {
       }
       if (upload.promoted_photo_id) continue
 
-      const boardId = await this.boardsService.ensureUserBoard(params.userId, {
-        clientBoardSessionId: upload.client_board_session_id,
-        mode: upload.mode,
-        nickname: upload.nickname,
-        freePosition: upload.free_position,
-        cellIds: upload.cell_ids,
-      })
+      const boardId =
+        await this.boardsService.ensureUserBoardForGuestPhotoPromotion(
+          params.userId,
+          {
+            clientBoardSessionId: upload.client_board_session_id,
+            mode: upload.mode,
+            nickname: upload.nickname,
+            freePosition: upload.free_position,
+            cellIds: upload.cell_ids,
+            position: upload.position,
+            cellId: upload.cell_id,
+          },
+        )
       const ext = photoExtFromContentType(upload.content_type)
       const photoId = upload.id
-      const destinationKey = isR2Object(upload)
-        ? this.r2.userPhotoKey({
-            userId: params.userId,
-            boardId,
-            position: upload.position,
-            id: photoId,
-            ext,
-          })
-        : `users/${params.userId}/boards/${boardId}/cells/${upload.position}/${photoId}.${ext}`
-      const bucketName = isR2Object(upload)
-        ? (upload.bucket_name ?? this.r2.bucketName)
-        : PHOTO_BUCKET
-      let promotedObject: StoredObjectRow = {
+      const destinationKey = this.r2.userPhotoKey({
+        userId: params.userId,
+        boardId,
+        position: upload.position,
+        id: photoId,
+        ext,
+      })
+      const bucketName = upload.bucket_name ?? this.r2.bucketName
+      let promotedObject: StoredPhotoObjectRow = {
         storage_path: destinationKey,
-        storage_provider: upload.storage_provider,
         bucket_name: bucketName,
       }
 
@@ -782,31 +799,21 @@ export class MediaService {
       if (existingPhotoError) throw existingPhotoError
 
       if (existingPhoto) {
-        promotedObject = existingPhoto as StoredObjectRow
+        promotedObject = existingPhoto as StoredPhotoObjectRow
       } else {
-        let objectEtag: string | null = null
-
-        if (isR2Object(upload)) {
-          await this.r2.copyObject({
-            sourceKey: upload.storage_path,
-            destinationKey,
-            bucketName,
+        await this.r2.copyObject({
+          sourceKey: upload.storage_path,
+          destinationKey,
+          bucketName,
+          contentType: upload.content_type,
+        })
+        const metadata = await this.r2.assertObjectMatches(
+          { objectKey: destinationKey, bucketName },
+          {
             contentType: upload.content_type,
-          })
-          const metadata = await this.r2.assertObjectMatches(
-            { objectKey: destinationKey, bucketName },
-            {
-              contentType: upload.content_type,
-              sizeBytes: Number(upload.size_bytes),
-            },
-          )
-          objectEtag = metadata.etag
-        } else {
-          const { error: copyError } = await this.admin.storage
-            .from(PHOTO_BUCKET)
-            .copy(upload.storage_path, destinationKey)
-          if (copyError) throw copyError
-        }
+            sizeBytes: Number(upload.size_bytes),
+          },
+        )
 
         const now = new Date().toISOString()
         const { error: insertError } = await this.admin.from('photos').insert({
@@ -816,9 +823,9 @@ export class MediaService {
           position: upload.position,
           cell_id: upload.cell_id,
           storage_path: destinationKey,
-          storage_provider: upload.storage_provider,
+          storage_provider: STORAGE_PROVIDER_R2,
           bucket_name: bucketName,
-          object_etag: objectEtag,
+          object_etag: metadata.etag,
           content_type: upload.content_type,
           size_bytes: upload.size_bytes,
           uploaded_at: now,
@@ -837,6 +844,7 @@ export class MediaService {
             position: upload.position,
             cell_id: upload.cell_id,
             photo_id: photoId,
+            clip_id: null,
             marked_at: markedAt,
             completed_at: markedAt,
             completion_type: 'photo',
@@ -844,6 +852,7 @@ export class MediaService {
           { onConflict: 'board_id,position' },
         )
       if (boardCellError) throw boardCellError
+      await this.boardsService.touchUserBoard(boardId)
 
       await this.removeStoredPhotos([upload])
 
@@ -883,7 +892,9 @@ export class MediaService {
 
     const { data: uploads, error } = await this.admin
       .from('guest_clip_uploads')
-      .select('*')
+      .select(
+        'id, guest_session_id, client_board_session_id, mode, board_kind, nickname, title, description, clip_description, free_position, cell_ids, mission_snapshots, position, cell_id, storage_path, poster_storage_path, storage_provider, bucket_name, object_etag, poster_object_etag, content_type, recorder_mime_type, codec, size_bytes, duration_ms, width, height, orientation, poster_content_type, poster_size_bytes, poster_width, poster_height, upload_status, expires_at, promoted_user_id, promoted_clip_id',
+      )
       .eq('guest_session_id', params.guestSessionId)
       .eq('upload_status', 'uploaded')
       .is('deleted_at', null)
@@ -897,6 +908,12 @@ export class MediaService {
 
     for (const upload of uploads as GuestClipUploadRow[]) {
       if (!upload.poster_storage_path || upload.promoted_clip_id) continue
+      if (
+        upload.expires_at &&
+        new Date(upload.expires_at).getTime() <= Date.now()
+      ) {
+        continue
+      }
 
       const boardId = await this.boardsService.ensureUserBoard(params.userId, {
         clientBoardSessionId: upload.client_board_session_id,
@@ -913,31 +930,30 @@ export class MediaService {
       const posterExt = posterExtFromContentType(
         upload.poster_content_type ?? 'image/jpeg',
       )
-      const clipPath = isR2Object(upload)
-        ? this.r2.userClipKey({
-            userId: params.userId,
-            boardId,
-            position: upload.position,
-            id: upload.id,
-            ext: clipExt,
-          })
-        : `users/${params.userId}/boards/${boardId}/cells/${upload.position}/clips/${upload.id}.${clipExt}`
-      const posterPath = isR2Object(upload)
-        ? this.r2.userPosterKey({
-            userId: params.userId,
-            boardId,
-            position: upload.position,
-            id: upload.id,
-            ext: posterExt,
-          })
-        : `users/${params.userId}/boards/${boardId}/cells/${upload.position}/posters/${upload.id}.${posterExt}`
-      const bucketName = isR2Object(upload)
-        ? (upload.bucket_name ?? this.r2.bucketName)
-        : CLIP_BUCKET
-      let clipEtag: string | null = null
-      let posterEtag: string | null = null
+      const clipPath = this.r2.userClipKey({
+        userId: params.userId,
+        boardId,
+        position: upload.position,
+        id: upload.id,
+        ext: clipExt,
+      })
+      const posterPath = this.r2.userPosterKey({
+        userId: params.userId,
+        boardId,
+        position: upload.position,
+        id: upload.id,
+        ext: posterExt,
+      })
+      const bucketName = upload.bucket_name ?? this.r2.bucketName
+      const { data: existingClip, error: existingClipError } = await this.admin
+        .from('clips')
+        .select('id')
+        .eq('id', upload.id)
+        .maybeSingle()
 
-      if (isR2Object(upload)) {
+      if (existingClipError) throw existingClipError
+
+      if (!existingClip) {
         await this.r2.copyObject({
           sourceKey: upload.storage_path,
           destinationKey: clipPath,
@@ -963,56 +979,46 @@ export class MediaService {
             },
           ),
         ])
-        clipEtag = clipMetadata.etag
-        posterEtag = posterMetadata.etag
-      } else {
-        const clipCopy = await this.admin.storage
-          .from(CLIP_BUCKET)
-          .copy(upload.storage_path, clipPath)
-        if (clipCopy.error) throw clipCopy.error
-        const posterCopy = await this.admin.storage
-          .from(CLIP_BUCKET)
-          .copy(upload.poster_storage_path, posterPath)
-        if (posterCopy.error) throw posterCopy.error
-      }
 
-      const { error: insertError } = await this.admin.from('clips').insert({
-        id: upload.id,
-        user_id: params.userId,
-        board_id: boardId,
-        cell_id: upload.cell_id,
-        position: upload.position,
-        storage_path: clipPath,
-        poster_storage_path: posterPath,
-        storage_provider: upload.storage_provider,
-        bucket_name: bucketName,
-        object_etag: clipEtag,
-        poster_object_etag: posterEtag,
-        content_type: upload.content_type,
-        recorder_mime_type: upload.recorder_mime_type,
-        codec: upload.codec,
-        size_bytes: upload.size_bytes,
-        duration_ms: upload.duration_ms,
-        width: upload.width,
-        height: upload.height,
-        orientation: upload.orientation,
-        poster_content_type: upload.poster_content_type,
-        poster_size_bytes: upload.poster_size_bytes,
-        poster_width: upload.poster_width,
-        poster_height: upload.poster_height,
-        uploaded_at: now,
-        poster_uploaded_at: now,
-        recorded_at: now,
-        source: 'guest_promoted',
-        description: upload.clip_description ?? null,
-      })
-      if (insertError) throw insertError
+        const { error: insertError } = await this.admin.from('clips').insert({
+          id: upload.id,
+          user_id: params.userId,
+          board_id: boardId,
+          cell_id: upload.cell_id,
+          position: upload.position,
+          storage_path: clipPath,
+          poster_storage_path: posterPath,
+          storage_provider: STORAGE_PROVIDER_R2,
+          bucket_name: bucketName,
+          object_etag: clipMetadata.etag,
+          poster_object_etag: posterMetadata.etag,
+          content_type: upload.content_type,
+          recorder_mime_type: upload.recorder_mime_type,
+          codec: upload.codec,
+          size_bytes: upload.size_bytes,
+          duration_ms: upload.duration_ms,
+          width: upload.width,
+          height: upload.height,
+          orientation: upload.orientation,
+          poster_content_type: upload.poster_content_type,
+          poster_size_bytes: upload.poster_size_bytes,
+          poster_width: upload.poster_width,
+          poster_height: upload.poster_height,
+          uploaded_at: now,
+          poster_uploaded_at: now,
+          recorded_at: now,
+          source: 'guest_promoted',
+          description: upload.clip_description ?? null,
+        })
+        if (insertError) throw insertError
+      }
 
       const { error: cellError } = await this.admin.from('board_cells').upsert(
         {
           board_id: boardId,
           position: upload.position,
           cell_id: upload.cell_id,
+          photo_id: null,
           clip_id: upload.id,
           marked_at: now,
           completed_at: now,
@@ -1021,6 +1027,7 @@ export class MediaService {
         { onConflict: 'board_id,position' },
       )
       if (cellError) throw cellError
+      await this.boardsService.touchUserBoard(boardId)
 
       const { error: updateError } = await this.admin
         .from('guest_clip_uploads')
@@ -1029,6 +1036,7 @@ export class MediaService {
           promoted_user_id: params.userId,
           promoted_clip_id: upload.id,
           promoted_at: now,
+          deleted_at: now,
         })
         .eq('id', upload.id)
       if (updateError) throw updateError
@@ -1043,71 +1051,245 @@ export class MediaService {
   }
 
   async cleanupExpiredGuestPhotos(limit = 100) {
-    const { data: uploads, error } = await this.admin
+    const { data: candidates, error } = await this.admin
       .from('guest_photo_uploads')
       .select(
         'id, guest_session_id, client_board_session_id, mode, nickname, free_position, cell_ids, position, cell_id, storage_path, storage_provider, bucket_name, object_etag, content_type, size_bytes, upload_status, expires_at, promoted_user_id, promoted_photo_id',
       )
       .in('upload_status', ['presigned', 'uploaded'])
-      .lt('expires_at', new Date().toISOString())
+      .lte('expires_at', new Date().toISOString())
       .is('deleted_at', null)
       .limit(limit)
 
     if (error) throw error
-    if (!uploads?.length) return { expired: 0 }
+    if (!candidates?.length) return { expired: 0 }
 
-    await this.removeStoredPhotos(uploads as GuestPhotoUploadRow[])
-
-    const { error: updateError } = await this.admin
+    const candidateRows = candidates as GuestPhotoUploadRow[]
+    const previousStatusById = new Map(
+      candidateRows.map((upload) => [upload.id, upload.upload_status]),
+    )
+    const now = new Date().toISOString()
+    const { data: uploads, error: updateError } = await this.admin
       .from('guest_photo_uploads')
       .update({
         upload_status: 'expired',
-        deleted_at: new Date().toISOString(),
+        deleted_at: now,
       })
       .in(
         'id',
-        (uploads as GuestPhotoUploadRow[]).map((upload) => upload.id),
+        candidateRows.map((upload) => upload.id),
       )
+      .in('upload_status', ['presigned', 'uploaded'])
+      .is('deleted_at', null)
+      .select('id, storage_path, bucket_name, upload_status')
     if (updateError) throw updateError
 
-    return { expired: uploads.length }
+    const claimedUploads = (uploads ?? []) as GuestPhotoUploadRow[]
+
+    try {
+      await this.removeStoredPhotos(claimedUploads)
+    } catch (error) {
+      await Promise.all(
+        claimedUploads.map((upload) =>
+          this.admin
+            .from('guest_photo_uploads')
+            .update({
+              upload_status: previousStatusById.get(upload.id) ?? 'presigned',
+              deleted_at: null,
+            })
+            .eq('id', upload.id)
+            .eq('upload_status', 'expired')
+            .eq('deleted_at', now),
+        ),
+      )
+      throw error
+    }
+
+    return { expired: claimedUploads.length }
   }
 
   async cleanupExpiredGuestClips(limit = 100) {
-    const { data: uploads, error } = await this.admin
+    const { data: candidates, error } = await this.admin
       .from('guest_clip_uploads')
-      .select('*')
+      .select(
+        'id, storage_path, poster_storage_path, bucket_name, upload_status, expires_at',
+      )
       .lte('expires_at', new Date().toISOString())
       .in('upload_status', ['presigned', 'uploaded', 'failed'])
       .is('deleted_at', null)
       .limit(limit)
 
     if (error) throw error
-    if (!uploads?.length) return { deleted: 0 }
+    if (!candidates?.length) return { deleted: 0 }
 
-    await this.removeStoredClipObjects(uploads as GuestClipUploadRow[])
-
-    const { error: updateError } = await this.admin
+    const candidateRows = candidates as GuestClipUploadRow[]
+    const previousStatusById = new Map(
+      candidateRows.map((upload) => [upload.id, upload.upload_status]),
+    )
+    const now = new Date().toISOString()
+    const { data: uploads, error: updateError } = await this.admin
       .from('guest_clip_uploads')
       .update({
         upload_status: 'expired',
-        deleted_at: new Date().toISOString(),
+        deleted_at: now,
       })
       .in(
         'id',
-        (uploads as GuestClipUploadRow[]).map((upload) => upload.id),
+        candidateRows.map((upload) => upload.id),
       )
+      .in('upload_status', ['presigned', 'uploaded', 'failed'])
+      .is('deleted_at', null)
+      .select('id, storage_path, poster_storage_path, bucket_name, upload_status')
     if (updateError) throw updateError
 
-    return { deleted: uploads.length }
+    const claimedUploads = (uploads ?? []) as GuestClipUploadRow[]
+
+    try {
+      await this.removeStoredClipObjects(claimedUploads)
+    } catch (error) {
+      await Promise.all(
+        claimedUploads.map((upload) =>
+          this.admin
+            .from('guest_clip_uploads')
+            .update({
+              upload_status: previousStatusById.get(upload.id) ?? 'presigned',
+              deleted_at: null,
+            })
+            .eq('id', upload.id)
+            .eq('upload_status', 'expired')
+            .eq('deleted_at', now),
+        ),
+      )
+      throw error
+    }
+
+    return { deleted: claimedUploads.length }
   }
 
-  private async removeStoredPhotos(objects: readonly StoredObjectRow[]) {
+  async cleanupStaleUserMedia(limit = 100) {
+    const cutoff = new Date(
+      Date.now() - SIGNED_UPLOAD_EXPIRES_SECONDS * 1000,
+    ).toISOString()
+    const [photosResult, clipsResult] = await Promise.all([
+      this.admin
+        .from('photos')
+        .select('id, storage_path, bucket_name')
+        .is('uploaded_at', null)
+        .is('deleted_at', null)
+        .lt('created_at', cutoff)
+        .limit(limit),
+      this.admin
+        .from('clips')
+        .select('id, storage_path, poster_storage_path, bucket_name')
+        .is('uploaded_at', null)
+        .is('deleted_at', null)
+        .lt('created_at', cutoff)
+        .limit(limit),
+    ])
+
+    if (photosResult.error) throw photosResult.error
+    if (clipsResult.error) throw clipsResult.error
+
+    const stalePhotos = (photosResult.data ?? []) as (StoredPhotoObjectRow & {
+      id: string
+    })[]
+    const staleClips = (clipsResult.data ?? []) as (StoredClipObjectRow & {
+      id: string
+    })[]
+
+    const photoClaimedAt = new Date().toISOString()
+    const photoUpdate = stalePhotos.length
+      ? await this.admin
+          .from('photos')
+          .update({ deleted_at: photoClaimedAt })
+          .in(
+            'id',
+            stalePhotos.map((photo) => photo.id),
+          )
+          .is('uploaded_at', null)
+          .is('deleted_at', null)
+          .select('id, storage_path, bucket_name')
+      : { data: [], error: null }
+
+    if (photoUpdate.error) throw photoUpdate.error
+
+    const photos = (photoUpdate.data ?? []) as (StoredPhotoObjectRow & {
+      id: string
+    })[]
+    await this.deleteClaimedPhotos(photos, photoClaimedAt)
+
+    const clipClaimedAt = new Date().toISOString()
+    const clipUpdate = staleClips.length
+      ? await this.admin
+          .from('clips')
+          .update({ deleted_at: clipClaimedAt })
+          .in(
+            'id',
+            staleClips.map((clip) => clip.id),
+          )
+          .is('uploaded_at', null)
+          .is('deleted_at', null)
+          .select('id, storage_path, poster_storage_path, bucket_name')
+      : { data: [], error: null }
+
+    if (clipUpdate.error) throw clipUpdate.error
+
+    const clips = (clipUpdate.data ?? []) as (StoredClipObjectRow & {
+      id: string
+    })[]
+    await this.deleteClaimedClips(clips, clipClaimedAt)
+
+    return { photos: photos.length, clips: clips.length }
+  }
+
+  private async deleteClaimedPhotos(
+    photos: readonly (StoredPhotoObjectRow & { id: string })[],
+    claimedAt: string,
+  ) {
+    try {
+      await this.removeStoredPhotos(photos)
+    } catch (error) {
+      if (photos.length) {
+        await this.admin
+          .from('photos')
+          .update({ deleted_at: null })
+          .in(
+            'id',
+            photos.map((photo) => photo.id),
+          )
+          .is('uploaded_at', null)
+          .eq('deleted_at', claimedAt)
+      }
+      throw error
+    }
+  }
+
+  private async deleteClaimedClips(
+    clips: readonly (StoredClipObjectRow & { id: string })[],
+    claimedAt: string,
+  ) {
+    try {
+      await this.removeStoredClipObjects(clips)
+    } catch (error) {
+      if (clips.length) {
+        await this.admin
+          .from('clips')
+          .update({ deleted_at: null })
+          .in(
+            'id',
+            clips.map((clip) => clip.id),
+          )
+          .is('uploaded_at', null)
+          .eq('deleted_at', claimedAt)
+      }
+      throw error
+    }
+  }
+
+  private async removeStoredPhotos(objects: readonly StoredPhotoObjectRow[]) {
     const r2ObjectsByBucket = new Map<string | null | undefined, string[]>()
-    const supabaseObjects = objects.filter((object) => !isR2Object(object))
 
     for (const object of objects) {
-      if (!isR2Object(object)) continue
       const paths = r2ObjectsByBucket.get(object.bucket_name) ?? []
       paths.push(object.storage_path)
       r2ObjectsByBucket.set(object.bucket_name, paths)
@@ -1118,29 +1300,14 @@ export class MediaService {
         this.r2.deleteObjects(paths, bucketName),
       ),
     )
-
-    if (supabaseObjects.length) {
-      const { error } = await this.admin.storage
-        .from(PHOTO_BUCKET)
-        .remove(supabaseObjects.map((object) => object.storage_path))
-      if (error) throw error
-    }
   }
 
   private async removeStoredClipObjects(
     objects: readonly StoredClipObjectRow[],
   ) {
     const r2ObjectsByBucket = new Map<string | null | undefined, string[]>()
-    const supabasePaths = objects.flatMap((object) =>
-      !isR2Object(object)
-        ? [object.storage_path, object.poster_storage_path].filter(
-            (path): path is string => Boolean(path),
-          )
-        : [],
-    )
 
     for (const object of objects) {
-      if (!isR2Object(object)) continue
       const paths = r2ObjectsByBucket.get(object.bucket_name) ?? []
       paths.push(
         ...[object.storage_path, object.poster_storage_path].filter(
@@ -1155,20 +1322,13 @@ export class MediaService {
         this.r2.deleteObjects(paths, bucketName),
       ),
     )
-
-    if (supabasePaths.length) {
-      const { error } = await this.admin.storage
-        .from(CLIP_BUCKET)
-        .remove(supabasePaths)
-      if (error) throw error
-    }
   }
 
   private async getUserPhoto(photoId: string, userId: string) {
     const result = await this.admin
       .from('photos')
       .select(
-        'id, user_id, board_id, position, cell_id, storage_path, storage_provider, bucket_name, content_type, size_bytes',
+        'id, user_id, board_id, position, cell_id, storage_path, storage_provider, bucket_name, object_etag, content_type, size_bytes, uploaded_at',
       )
       .eq('id', photoId)
       .eq('user_id', userId)
@@ -1188,7 +1348,7 @@ export class MediaService {
     const result = await this.admin
       .from('guest_photo_uploads')
       .select(
-        'id, guest_session_id, storage_path, storage_provider, bucket_name, content_type, size_bytes',
+        'id, guest_session_id, client_board_session_id, mode, nickname, free_position, cell_ids, position, cell_id, storage_path, storage_provider, bucket_name, object_etag, content_type, size_bytes, uploaded_at, upload_status, expires_at',
       )
       .eq('id', photoId)
       .eq('guest_session_id', guestSessionId)
@@ -1205,7 +1365,7 @@ export class MediaService {
     const result = await this.admin
       .from('clips')
       .select(
-        'id, user_id, board_id, position, cell_id, storage_path, poster_storage_path, storage_provider, bucket_name, content_type, size_bytes, duration_ms, poster_content_type, poster_size_bytes, description',
+        'id, user_id, board_id, position, cell_id, storage_path, poster_storage_path, storage_provider, bucket_name, object_etag, content_type, size_bytes, duration_ms, poster_content_type, poster_size_bytes, uploaded_at, description',
       )
       .eq('id', clipId)
       .eq('user_id', userId)
@@ -1225,7 +1385,7 @@ export class MediaService {
     const result = await this.admin
       .from('guest_clip_uploads')
       .select(
-        'id, guest_session_id, client_board_session_id, storage_path, poster_storage_path, storage_provider, bucket_name, content_type, size_bytes, duration_ms, poster_content_type, poster_size_bytes, description, clip_description',
+        'id, guest_session_id, client_board_session_id, mode, board_kind, nickname, title, description, clip_description, free_position, cell_ids, mission_snapshots, position, cell_id, storage_path, poster_storage_path, storage_provider, bucket_name, object_etag, poster_object_etag, content_type, size_bytes, duration_ms, poster_content_type, poster_size_bytes, uploaded_at, upload_status, expires_at',
       )
       .eq('id', clipId)
       .eq('guest_session_id', guestSessionId)

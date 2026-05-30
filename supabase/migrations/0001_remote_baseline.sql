@@ -93,6 +93,144 @@ begin
 end;
 $$;
 
+--
+-- Name: confirm_user_photo_upload(uuid, uuid, text, timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.confirm_user_photo_upload(p_photo_id uuid, p_user_id uuid, p_object_etag text, p_confirmed_at timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  v_photo record;
+begin
+  if coalesce(auth.role(), '') <> 'service_role' then
+    raise exception 'Only service role can confirm uploads.'
+      using errcode = '42501';
+  end if;
+
+  update public.photos
+     set uploaded_at = p_confirmed_at,
+         object_etag = p_object_etag
+   where id = p_photo_id
+     and user_id = p_user_id
+     and deleted_at is null
+   returning board_id, "position", cell_id
+        into v_photo;
+
+  if not found or v_photo.board_id is null or v_photo."position" is null or v_photo.cell_id is null then
+    raise exception 'Photo is missing board metadata.';
+  end if;
+
+  insert into public.board_cells (
+    board_id,
+    "position",
+    cell_id,
+    photo_id,
+    clip_id,
+    marked_at,
+    completed_at,
+    completion_type
+  )
+  values (
+    v_photo.board_id,
+    v_photo."position",
+    v_photo.cell_id,
+    p_photo_id,
+    null,
+    p_confirmed_at,
+    p_confirmed_at,
+    'photo'
+  )
+  on conflict (board_id, "position") do update
+     set cell_id = excluded.cell_id,
+         photo_id = excluded.photo_id,
+         clip_id = null,
+         marked_at = excluded.marked_at,
+         completed_at = excluded.completed_at,
+         completion_type = excluded.completion_type;
+
+  update public.boards
+     set updated_at = p_confirmed_at
+   where id = v_photo.board_id
+     and user_id = p_user_id;
+end;
+$$;
+
+
+--
+-- Name: confirm_user_clip_upload(uuid, uuid, text, text, timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.confirm_user_clip_upload(p_clip_id uuid, p_user_id uuid, p_object_etag text, p_poster_object_etag text, p_confirmed_at timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  v_clip record;
+begin
+  if coalesce(auth.role(), '') <> 'service_role' then
+    raise exception 'Only service role can confirm uploads.'
+      using errcode = '42501';
+  end if;
+
+  update public.clips
+     set uploaded_at = p_confirmed_at,
+         poster_uploaded_at = p_confirmed_at,
+         object_etag = p_object_etag,
+         poster_object_etag = p_poster_object_etag
+   where id = p_clip_id
+     and user_id = p_user_id
+     and deleted_at is null
+   returning board_id, "position", cell_id
+        into v_clip;
+
+  if not found or v_clip.board_id is null or v_clip."position" is null or v_clip.cell_id is null then
+    raise exception 'Clip is missing board metadata.';
+  end if;
+
+  insert into public.board_cells (
+    board_id,
+    "position",
+    cell_id,
+    photo_id,
+    clip_id,
+    marked_at,
+    completed_at,
+    completion_type
+  )
+  values (
+    v_clip.board_id,
+    v_clip."position",
+    v_clip.cell_id,
+    null,
+    p_clip_id,
+    p_confirmed_at,
+    p_confirmed_at,
+    'clip'
+  )
+  on conflict (board_id, "position") do update
+     set cell_id = excluded.cell_id,
+         photo_id = null,
+         clip_id = excluded.clip_id,
+         marked_at = excluded.marked_at,
+         completed_at = excluded.completed_at,
+         completion_type = excluded.completion_type;
+
+  update public.boards
+     set updated_at = p_confirmed_at
+   where id = v_clip.board_id
+     and user_id = p_user_id;
+end;
+$$;
+
+
+REVOKE ALL ON FUNCTION public.confirm_user_photo_upload(uuid, uuid, text, timestamp with time zone) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.confirm_user_photo_upload(uuid, uuid, text, timestamp with time zone) TO service_role;
+
+REVOKE ALL ON FUNCTION public.confirm_user_clip_upload(uuid, uuid, text, text, timestamp with time zone) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.confirm_user_clip_upload(uuid, uuid, text, text, timestamp with time zone) TO service_role;
+
 
 SET default_tablespace = '';
 
@@ -120,6 +258,7 @@ CREATE TABLE public.board_cells (
     completion_type text,
     clip_id uuid,
     CONSTRAINT board_cells_completion_type_check CHECK (((completion_type IS NULL) OR (completion_type = ANY (ARRAY['photo'::text, 'no_photo'::text, 'clip'::text, 'no_media'::text, 'free'::text])))),
+    CONSTRAINT board_cells_single_media_check CHECK ((NOT ((photo_id IS NOT NULL) AND (clip_id IS NOT NULL)))),
     CONSTRAINT board_cells_position_check CHECK ((("position" >= 0) AND ("position" < 25)))
 );
 
@@ -139,8 +278,12 @@ CREATE TABLE public.boards (
     nickname text,
     free_position integer,
     cell_ids text[],
+    board_kind text DEFAULT 'mission'::text NOT NULL,
+    title text,
+    description text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     deleted_at timestamp with time zone,
+    CONSTRAINT boards_board_kind_check CHECK ((board_kind = ANY (ARRAY['mission'::text, 'custom'::text]))),
     CONSTRAINT boards_free_position_check CHECK (((free_position IS NULL) OR ((free_position >= 0) AND (free_position < 25))))
 );
 
@@ -157,6 +300,10 @@ CREATE TABLE public.clips (
     cell_id text NOT NULL,
     storage_path text NOT NULL,
     poster_storage_path text,
+    storage_provider text DEFAULT 'r2'::text NOT NULL,
+    bucket_name text NOT NULL,
+    object_etag text,
+    poster_object_etag text,
     content_type text NOT NULL,
     recorder_mime_type text NOT NULL,
     codec text,
@@ -174,10 +321,12 @@ CREATE TABLE public.clips (
     recorded_at timestamp with time zone,
     deleted_at timestamp with time zone,
     source text DEFAULT 'authenticated'::text NOT NULL,
+    description text,
     CONSTRAINT clips_duration_ms_check CHECK (((duration_ms > 0) AND (duration_ms <= 3500))),
     CONSTRAINT clips_orientation_check CHECK (((orientation IS NULL) OR (orientation = ANY (ARRAY['portrait'::text, 'landscape'::text, 'square'::text])))),
     CONSTRAINT clips_position_check CHECK ((("position" >= 0) AND ("position" < 25))),
-    CONSTRAINT clips_source_check CHECK ((source = ANY (ARRAY['authenticated'::text, 'guest_promoted'::text])))
+    CONSTRAINT clips_source_check CHECK ((source = ANY (ARRAY['authenticated'::text, 'guest_promoted'::text]))),
+    CONSTRAINT clips_storage_provider_check CHECK ((storage_provider = 'r2'::text))
 );
 
 
@@ -190,13 +339,21 @@ CREATE TABLE public.guest_clip_uploads (
     guest_session_id uuid NOT NULL,
     client_board_session_id text NOT NULL,
     mode public.board_mode NOT NULL,
+    board_kind text DEFAULT 'mission'::text NOT NULL,
     nickname text NOT NULL,
+    title text NOT NULL,
+    description text,
+    mission_snapshots jsonb NOT NULL,
     free_position integer NOT NULL,
     cell_ids text[] NOT NULL,
     "position" integer NOT NULL,
     cell_id text NOT NULL,
     storage_path text NOT NULL,
     poster_storage_path text,
+    storage_provider text DEFAULT 'r2'::text NOT NULL,
+    bucket_name text NOT NULL,
+    object_etag text,
+    poster_object_etag text,
     content_type text NOT NULL,
     recorder_mime_type text NOT NULL,
     codec text,
@@ -218,10 +375,13 @@ CREATE TABLE public.guest_clip_uploads (
     promoted_clip_id uuid,
     promoted_at timestamp with time zone,
     deleted_at timestamp with time zone,
+    clip_description text,
+    CONSTRAINT guest_clip_uploads_board_kind_check CHECK ((board_kind = ANY (ARRAY['mission'::text, 'custom'::text]))),
     CONSTRAINT guest_clip_uploads_duration_ms_check CHECK (((duration_ms > 0) AND (duration_ms <= 3500))),
     CONSTRAINT guest_clip_uploads_free_position_check CHECK (((free_position >= 0) AND (free_position < 25))),
     CONSTRAINT guest_clip_uploads_orientation_check CHECK (((orientation IS NULL) OR (orientation = ANY (ARRAY['portrait'::text, 'landscape'::text, 'square'::text])))),
     CONSTRAINT guest_clip_uploads_position_check CHECK ((("position" >= 0) AND ("position" < 25))),
+    CONSTRAINT guest_clip_uploads_storage_provider_check CHECK ((storage_provider = 'r2'::text)),
     CONSTRAINT guest_clip_uploads_upload_status_check CHECK ((upload_status = ANY (ARRAY['presigned'::text, 'uploaded'::text, 'failed'::text, 'promoted'::text, 'expired'::text, 'deleted'::text])))
 );
 
@@ -241,6 +401,9 @@ CREATE TABLE public.guest_photo_uploads (
     "position" integer NOT NULL,
     cell_id text NOT NULL,
     storage_path text NOT NULL,
+    storage_provider text DEFAULT 'r2'::text NOT NULL,
+    bucket_name text NOT NULL,
+    object_etag text,
     content_type text NOT NULL,
     size_bytes bigint NOT NULL,
     upload_status text DEFAULT 'presigned'::text NOT NULL,
@@ -253,6 +416,7 @@ CREATE TABLE public.guest_photo_uploads (
     deleted_at timestamp with time zone,
     CONSTRAINT guest_photo_uploads_free_position_check CHECK (((free_position >= 0) AND (free_position < 25))),
     CONSTRAINT guest_photo_uploads_position_check CHECK ((("position" >= 0) AND ("position" < 25))),
+    CONSTRAINT guest_photo_uploads_storage_provider_check CHECK ((storage_provider = 'r2'::text)),
     CONSTRAINT guest_photo_uploads_upload_status_check CHECK ((upload_status = ANY (ARRAY['presigned'::text, 'uploaded'::text, 'promoted'::text, 'expired'::text, 'deleted'::text])))
 );
 
@@ -265,6 +429,9 @@ CREATE TABLE public.photos (
     id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
     user_id uuid NOT NULL,
     storage_path text NOT NULL,
+    storage_provider text DEFAULT 'r2'::text NOT NULL,
+    bucket_name text NOT NULL,
+    object_etag text,
     content_type text NOT NULL,
     size_bytes bigint NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -277,7 +444,8 @@ CREATE TABLE public.photos (
     captured_at timestamp with time zone,
     mission_snapshot jsonb,
     CONSTRAINT photos_position_check CHECK ((("position" IS NULL) OR (("position" >= 0) AND ("position" < 25)))),
-    CONSTRAINT photos_source_check CHECK ((source = ANY (ARRAY['authenticated'::text, 'guest_promoted'::text])))
+    CONSTRAINT photos_source_check CHECK ((source = ANY (ARRAY['authenticated'::text, 'guest_promoted'::text]))),
+    CONSTRAINT photos_storage_provider_check CHECK ((storage_provider = 'r2'::text))
 );
 
 
@@ -980,4 +1148,3 @@ CREATE POLICY user_consents_select_own ON public.user_consents FOR SELECT USING 
 --
 
 \unrestrict wDHAEdMh0m1vySyfH29UzfWp4yVMY2kkjnavAu20aulhn3noIJEukfHmgh1xLCo
-

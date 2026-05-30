@@ -30,6 +30,12 @@ export class JobsController {
     return this.mediaService.cleanupExpiredGuestClips()
   }
 
+  @Post('cleanup-stale-user-media')
+  async cleanupStaleUserMedia(@Req() request: Request) {
+    this.assertCronAuthorized(request)
+    return this.mediaService.cleanupStaleUserMedia()
+  }
+
   private assertCronAuthorized(request: Request) {
     const secret = this.config.get('CRON_SECRET', { infer: true })
     const querySecret =
@@ -62,6 +68,12 @@ export class JobsCompatibilityController {
   async cleanupTempClips(@Req() request: Request) {
     this.assertCronAuthorized(request)
     return this.mediaService.cleanupExpiredGuestClips()
+  }
+
+  @Get('cleanup-stale-user-media')
+  async cleanupStaleUserMedia(@Req() request: Request) {
+    this.assertCronAuthorized(request)
+    return this.mediaService.cleanupStaleUserMedia()
   }
 
   private assertCronAuthorized(request: Request) {
