@@ -1,6 +1,11 @@
-import { BadRequestException, Injectable } from '@nestjs/common'
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
 
 import type {
+  BoardListQueryInput,
   BoardSessionInput,
   BoardSnapshotInput,
 } from '@/boards/boards.schemas'
@@ -10,9 +15,10 @@ import { signedUrlExpiresAt } from '@/media/media.utils'
 import { R2Service } from '@/storage/r2.service'
 import { SupabaseService } from '@/supabase/supabase.service'
 
-type BoardMode = '5x5' | '3x3'
-type BoardKind = 'mission' | 'custom'
-type CompletionType = 'photo' | 'no_photo' | 'clip' | 'no_media' | 'free'
+export type BoardMode = '5x5' | '3x3'
+export type BoardKind = 'mission' | 'custom'
+export type BoardHistoryStatus = 'active' | 'completed'
+export type CompletionType = 'photo' | 'no_photo' | 'clip' | 'no_media' | 'free'
 
 interface BoardIdRow {
   id: string
@@ -29,7 +35,7 @@ export interface MissionSnapshot {
   variant: string
 }
 
-interface BoardRow {
+export interface BoardRow {
   id: string
   user_id: string
   mode: BoardMode
@@ -46,7 +52,7 @@ interface BoardRow {
   deleted_at?: string | null
 }
 
-interface BoardCellRow {
+export interface BoardCellRow {
   board_id: string
   position: number
   cell_id: string
@@ -106,6 +112,14 @@ const CLIP_HISTORY_SELECT =
 
 const BOARD_HISTORY_SELECT =
   'id, user_id, mode, board_kind, client_session_id, nickname, title, description, free_position, cell_ids, created_at, updated_at, ended_at, deleted_at'
+
+const COMPLETION_TYPES = new Set<CompletionType>([
+  'photo',
+  'no_photo',
+  'clip',
+  'no_media',
+  'free',
+])
 
 function boardKindFor(input: BoardSnapshotInput | BoardRow): BoardKind {
   const snapshot = input as Partial<BoardSnapshotInput>
@@ -238,21 +252,139 @@ function isRestorableBoardMode(
   return mode === '5x5' || mode === '3x3'
 }
 
-function toHistoryItem(board: BoardRow, cells: readonly BoardCellRow[]) {
+export interface BoardCompletionSummary {
+  completedAt: string | null
+  completedCount: number
+  totalTargetCount: number
+  isFullyCompleted: boolean
+  photoCount: number
+  clipCount: number
+  mediaCount: number
+}
+
+function isValidBoardPosition(position: number, boardSize: number) {
+  return Number.isInteger(position) && position >= 0 && position < boardSize
+}
+
+function isValidBoardCell(board: BoardRow, cell: BoardCellRow, boardSize: number) {
+  if (!isValidBoardPosition(cell.position, boardSize)) return false
+  return board.cell_ids?.[cell.position] === cell.cell_id
+}
+
+function hasCompletionTypeEvidence(
+  cell: BoardCellRow,
+  isFreePosition: boolean,
+) {
+  if (!cell.completion_type || !COMPLETION_TYPES.has(cell.completion_type)) {
+    return false
+  }
+
+  return cell.completion_type !== 'free' || isFreePosition
+}
+
+function hasCellCompletionEvidence(
+  cell: BoardCellRow,
+  isFreePosition: boolean,
+) {
+  return Boolean(
+    cell.photo_id ||
+      cell.clip_id ||
+      cell.marked_at ||
+      cell.completed_at ||
+      hasCompletionTypeEvidence(cell, isFreePosition),
+  )
+}
+
+export function summarizeBoardCompletion(
+  board: BoardRow,
+  cells: readonly BoardCellRow[],
+): BoardCompletionSummary {
+  const boardSize = boardSizeForMode(board.mode)
   const completedPositions = new Set<number>()
   let photoCount = 0
   let clipCount = 0
 
+  const hasValidCellSnapshot = board.cell_ids?.length === boardSize
+  const freePosition = board.free_position
+  const hasValidFreePosition =
+    typeof freePosition === 'number' &&
+    isValidBoardPosition(freePosition, boardSize)
+
+  if (hasValidCellSnapshot && hasValidFreePosition) {
+    completedPositions.add(freePosition)
+  }
+
   for (const cell of cells) {
+    if (!hasValidCellSnapshot || !isValidBoardCell(board, cell, boardSize)) {
+      continue
+    }
+
+    const isFreePosition = cell.position === board.free_position
     if (cell.photo_id) photoCount += 1
     if (cell.clip_id) clipCount += 1
-    if (cell.clip_id || cell.photo_id || cell.marked_at || cell.completed_at) {
+    if (hasCellCompletionEvidence(cell, isFreePosition)) {
       completedPositions.add(cell.position)
     }
   }
 
+  const completedCount = completedPositions.size
+
+  return {
+    completedAt: board.ended_at ?? null,
+    completedCount,
+    totalTargetCount: boardSize,
+    isFullyCompleted:
+      hasValidCellSnapshot &&
+      hasValidFreePosition &&
+      completedCount === boardSize,
+    photoCount,
+    clipCount,
+    mediaCount: photoCount + clipCount,
+  }
+}
+
+function boardHistoryStatus(board: BoardRow): BoardHistoryStatus {
+  return board.ended_at ? 'completed' : 'active'
+}
+
+function hasCompleteCompletionSnapshot(
+  board: BoardRow,
+  cells: readonly BoardCellRow[],
+) {
+  const boardSize = boardSizeForMode(board.mode)
+
+  if (
+    !board.client_session_id ||
+    !board.cell_ids ||
+    board.cell_ids.length !== boardSize ||
+    typeof board.free_position !== 'number' ||
+    !isValidBoardPosition(board.free_position, boardSize)
+  ) {
+    return false
+  }
+
+  if (boardKindFor(board) !== 'mission') return true
+
+  const cellsByPosition = new Map(cells.map((cell) => [cell.position, cell]))
+
+  return board.cell_ids.every((cellId, position) => {
+    const cell = cellsByPosition.get(position)
+    return Boolean(
+      cell &&
+        cell.cell_id === cellId &&
+        isValidBoardPosition(cell.position, boardSize) &&
+        cell.mission_snapshot,
+    )
+  })
+}
+
+function toHistoryItem(board: BoardRow, cells: readonly BoardCellRow[]) {
+  const summary = summarizeBoardCompletion(board, cells)
+
   return {
     id: board.id,
+    sessionId: board.client_session_id,
+    status: boardHistoryStatus(board),
     mode: board.mode,
     boardKind: boardKindFor(board),
     nickname: board.nickname ?? '산책',
@@ -261,9 +393,21 @@ function toHistoryItem(board: BoardRow, cells: readonly BoardCellRow[]) {
     createdAt: board.created_at,
     updatedAt: boardUpdatedAt(board),
     endedAt: board.ended_at,
-    photoCount,
-    clipCount,
-    completedCount: completedPositions.size,
+    thumbnailUrls: [],
+    ...summary,
+  }
+}
+
+function toBoardCompletionCloseResponse(
+  board: BoardRow,
+  cells: readonly BoardCellRow[],
+) {
+  const summary = summarizeBoardCompletion(board, cells)
+
+  return {
+    id: board.id,
+    endedAt: board.ended_at,
+    ...summary,
   }
 }
 
@@ -279,13 +423,17 @@ function detailCellFromRow(
   photo: unknown,
   clip: unknown,
 ) {
+  const isFreePosition = row.position === board.free_position
+
   return {
     position: row.position,
     cellId: row.cell_id,
     mission: detailCellMission(board, row),
     markedAt: row.marked_at,
-    completedAt: row.completed_at ?? null,
-    completionType: row.completion_type ?? null,
+    completedAt: isFreePosition
+      ? (row.completed_at ?? board.ended_at ?? boardUpdatedAt(board))
+      : (row.completed_at ?? null),
+    completionType: isFreePosition ? 'free' : (row.completion_type ?? null),
     photo,
     clip,
   }
@@ -538,21 +686,37 @@ export class BoardsService {
     if (error) throw error
   }
 
-  async listUserBoards(userId: string) {
-    const { data: boards, error: boardError } = await this.admin
+  async listUserBoards(
+    userId: string,
+    options: BoardListQueryInput = { status: 'all', limit: 50 },
+  ) {
+    let query = this.admin
       .from('boards')
       .select(BOARD_HISTORY_SELECT)
       .eq('user_id', userId)
       .is('deleted_at', null)
       .not('client_session_id', 'is', null)
-      .order('updated_at', { ascending: false })
-      .limit(50)
+
+    if (options.status === 'completed') {
+      query = query
+        .not('ended_at', 'is', null)
+        .order('ended_at', { ascending: false })
+        .order('updated_at', { ascending: false })
+    } else {
+      if (options.status === 'active') {
+        query = query.is('ended_at', null)
+      }
+      query = query.order('updated_at', { ascending: false })
+    }
+
+    const { data: boards, error: boardError } = await query.limit(options.limit)
 
     if (boardError) throw boardError
     if (!boards?.length) return []
 
+    const boardRows = boards as BoardRow[]
     const cells = await this.getBoardCellsForBoards(
-      boards.map((board: BoardRow) => board.id),
+      boardRows.map((board) => board.id),
     )
     const cellsByBoard = new Map<string, BoardCellRow[]>()
 
@@ -562,9 +726,24 @@ export class BoardsService {
       cellsByBoard.set(cell.board_id, list)
     })
 
-    return boards.map((board: BoardRow) =>
-      toHistoryItem(board, cellsByBoard.get(board.id) ?? []),
-    )
+    return boardRows
+      .map((board) => {
+        const boardCells = cellsByBoard.get(board.id) ?? []
+        return {
+          board,
+          cells: boardCells,
+          item: toHistoryItem(board, boardCells),
+        }
+      })
+      .filter(({ board, cells, item }) => {
+        if (options.status !== 'completed') return true
+        return (
+          Boolean(board.ended_at) &&
+          hasCompleteCompletionSnapshot(board, cells) &&
+          item.isFullyCompleted
+        )
+      })
+      .map(({ item }) => item)
   }
 
   async getUserBoardDetail(userId: string, boardId: string) {
@@ -589,6 +768,10 @@ export class BoardsService {
         missionSnapshots: [],
       })
       cells = await this.getBoardCellsForBoard(board.id)
+    }
+
+    if (!hasCompleteCompletionSnapshot(board, cells)) {
+      return null
     }
 
     const photosById = new Map<string, PhotoRow>()
@@ -748,17 +931,51 @@ export class BoardsService {
   }
 
   async endUserBoard(userId: string, boardId: string) {
+    const board = await this.getBoardForUser(userId, boardId)
+    if (!board) throw new NotFoundException('Board not found.')
+
+    let cells = await this.getBoardCellsForBoard(board.id)
+    if (!cells.length && boardKindFor(board) === 'custom' && board.cell_ids) {
+      await this.upsertBoardCellSnapshots(board.id, {
+        cellIds: board.cell_ids,
+        missionSnapshots: [],
+      })
+      cells = await this.getBoardCellsForBoard(board.id)
+    }
+
+    if (!hasCompleteCompletionSnapshot(board, cells)) {
+      throw new BadRequestException('Board snapshot is incomplete.')
+    }
+
+    const summary = summarizeBoardCompletion(board, cells)
+    if (!summary.isFullyCompleted) {
+      throw new BadRequestException('Board is not fully completed.')
+    }
+
+    if (board.ended_at) {
+      return toBoardCompletionCloseResponse(board, cells)
+    }
+
     const now = new Date().toISOString()
     const { data, error } = await this.admin
       .from('boards')
       .update({ ended_at: now, updated_at: now })
       .eq('id', boardId)
       .eq('user_id', userId)
-      .select('id')
+      .is('ended_at', null)
+      .select(BOARD_HISTORY_SELECT)
       .maybeSingle()
 
     if (error) throw error
-    return Boolean(data)
+    const updated = data as BoardRow | null
+    if (updated) return toBoardCompletionCloseResponse(updated, cells)
+
+    const raced = await this.getBoardForUser(userId, boardId)
+    if (raced?.ended_at) {
+      return toBoardCompletionCloseResponse(raced, cells)
+    }
+
+    throw new NotFoundException('Board not found.')
   }
 
   async deleteUserBoard(userId: string, boardId: string) {

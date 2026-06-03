@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
-import { boardSessionSchema } from '@/boards/boards.schemas'
+import {
+  boardListQuerySchema,
+  boardSessionSchema,
+} from '@/boards/boards.schemas'
 
 function cells(count: number) {
   return Array.from({ length: count }, (_, index) => `cell-${index}`)
@@ -91,5 +94,31 @@ describe('boardSessionSchema', () => {
     })
 
     expect(parsed.success).toBe(false)
+  })
+})
+
+describe('boardListQuerySchema', () => {
+  it('defaults to all boards with a limit of 50', () => {
+    expect(boardListQuerySchema.parse({})).toEqual({
+      status: 'all',
+      limit: 50,
+    })
+  })
+
+  it('accepts completed status and coerces string limit', () => {
+    expect(
+      boardListQuerySchema.parse({ status: 'completed', limit: '12' }),
+    ).toEqual({
+      status: 'completed',
+      limit: 12,
+    })
+  })
+
+  it('rejects unknown status and out-of-range limits', () => {
+    expect(
+      boardListQuerySchema.safeParse({ status: 'unknown' }).success,
+    ).toBe(false)
+    expect(boardListQuerySchema.safeParse({ limit: '0' }).success).toBe(false)
+    expect(boardListQuerySchema.safeParse({ limit: '51' }).success).toBe(false)
   })
 })

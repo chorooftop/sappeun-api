@@ -4,6 +4,13 @@ import { MAX_CLIP_DESCRIPTION_LENGTH } from '@/media/media.constants'
 
 export const boardModeSchema = z.enum(['5x5', '3x3'])
 export const boardKindSchema = z.enum(['mission', 'custom'])
+export const boardListStatusSchema = z.enum(['completed', 'active', 'all'])
+
+export const boardListQuerySchema = z
+  .object({
+    status: boardListStatusSchema.default('all'),
+    limit: z.coerce.number().int().min(1).max(50).default(50),
+  })
 
 export function boardSizeForMode(mode: z.infer<typeof boardModeSchema>) {
   return mode === '3x3' ? 9 : 25
@@ -251,3 +258,4 @@ export const replaceBoardCellSchema = z.object({
 
 export type BoardSnapshotInput = z.infer<typeof boardSnapshotSchema>
 export type BoardSessionInput = z.infer<typeof boardSessionSchema>
+export type BoardListQueryInput = z.infer<typeof boardListQuerySchema>

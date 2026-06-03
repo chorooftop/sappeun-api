@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common'
@@ -20,9 +21,11 @@ import { AuthService } from '@/auth/auth.service'
 import { SupabaseAuthGuard } from '@/auth/supabase-auth.guard'
 import { BoardsService } from '@/boards/boards.service'
 import {
+  boardListQuerySchema,
   boardSessionSchema,
   markBoardCellSchema,
   replaceBoardCellSchema,
+  type BoardListQueryInput,
   type BoardSessionInput,
 } from '@/boards/boards.schemas'
 import { ZodValidationPipe } from '@/common/pipes/zod-validation.pipe'
@@ -34,6 +37,19 @@ function assertBoardPosition(position: number) {
   return position
 }
 
+function parseBoardListQuery(query: unknown): BoardListQueryInput {
+  const parsed = boardListQuerySchema.safeParse(query)
+  if (parsed.success) return parsed.data
+
+  throw new BadRequestException({
+    error: 'Invalid request query.',
+    issues: parsed.error.issues.map((issue) => ({
+      path: issue.path.join('.'),
+      message: issue.message,
+    })),
+  })
+}
+
 @Controller('boards')
 export class BoardsController {
   constructor(
@@ -43,8 +59,13 @@ export class BoardsController {
 
   @Get()
   @UseGuards(SupabaseAuthGuard)
-  async list(@CurrentUser() user: User) {
-    return { boards: await this.boardsService.listUserBoards(user.id) }
+  async list(@CurrentUser() user: User, @Query() query: unknown) {
+    return {
+      boards: await this.boardsService.listUserBoards(
+        user.id,
+        parseBoardListQuery(query),
+      ),
+    }
   }
 
   @Get('active')
@@ -111,7 +132,10 @@ export class BoardsController {
   @Post(':boardId/end')
   @UseGuards(SupabaseAuthGuard)
   async end(@CurrentUser() user: User, @Param('boardId') boardId: string) {
-    return { ok: await this.boardsService.endUserBoard(user.id, boardId) }
+    return {
+      ok: true,
+      board: await this.boardsService.endUserBoard(user.id, boardId),
+    }
   }
 
   @Patch(':boardId/cells/:position')
@@ -160,9 +184,14 @@ export class BoardsCompatibilityController {
   ) {}
 
   @Get()
-  async list(@Req() request: Request) {
+  async list(@Req() request: Request, @Query() query: unknown) {
     const user = await this.authService.requireUser(request)
-    return { boards: await this.boardsService.listUserBoards(user.id) }
+    return {
+      boards: await this.boardsService.listUserBoards(
+        user.id,
+        parseBoardListQuery(query),
+      ),
+    }
   }
 
   @Get('active')
@@ -229,7 +258,10 @@ export class BoardsCompatibilityController {
   @Post(':boardId/end')
   async end(@Req() request: Request, @Param('boardId') boardId: string) {
     const user = await this.authService.requireUser(request)
-    return { ok: await this.boardsService.endUserBoard(user.id, boardId) }
+    return {
+      ok: true,
+      board: await this.boardsService.endUserBoard(user.id, boardId),
+    }
   }
 
   @Patch(':boardId/cells/:position')
