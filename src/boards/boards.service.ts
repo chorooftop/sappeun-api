@@ -266,7 +266,11 @@ function isValidBoardPosition(position: number, boardSize: number) {
   return Number.isInteger(position) && position >= 0 && position < boardSize
 }
 
-function isValidBoardCell(board: BoardRow, cell: BoardCellRow, boardSize: number) {
+function isValidBoardCell(
+  board: BoardRow,
+  cell: BoardCellRow,
+  boardSize: number,
+) {
   if (!isValidBoardPosition(cell.position, boardSize)) return false
   return board.cell_ids?.[cell.position] === cell.cell_id
 }
@@ -288,10 +292,10 @@ function hasCellCompletionEvidence(
 ) {
   return Boolean(
     cell.photo_id ||
-      cell.clip_id ||
-      cell.marked_at ||
-      cell.completed_at ||
-      hasCompletionTypeEvidence(cell, isFreePosition),
+    cell.clip_id ||
+    cell.marked_at ||
+    cell.completed_at ||
+    hasCompletionTypeEvidence(cell, isFreePosition),
   )
 }
 
@@ -371,9 +375,9 @@ function hasCompleteCompletionSnapshot(
     const cell = cellsByPosition.get(position)
     return Boolean(
       cell &&
-        cell.cell_id === cellId &&
-        isValidBoardPosition(cell.position, boardSize) &&
-        cell.mission_snapshot,
+      cell.cell_id === cellId &&
+      isValidBoardPosition(cell.position, boardSize) &&
+      cell.mission_snapshot,
     )
   })
 }
@@ -398,6 +402,17 @@ function toHistoryItem(board: BoardRow, cells: readonly BoardCellRow[]) {
   }
 }
 
+function representativeMediaCell(cells: readonly BoardCellRow[]) {
+  const sorted = [...cells].sort(
+    (left, right) => left.position - right.position,
+  )
+  return (
+    sorted.find((cell) => Boolean(cell.clip_id)) ??
+    sorted.find((cell) => Boolean(cell.photo_id)) ??
+    null
+  )
+}
+
 function toBoardCompletionCloseResponse(
   board: BoardRow,
   cells: readonly BoardCellRow[],
@@ -413,7 +428,8 @@ function toBoardCompletionCloseResponse(
 
 function detailCellMission(board: BoardRow, row: BoardCellRow) {
   if (row.mission_snapshot) return row.mission_snapshot
-  if (boardKindFor(board) === 'custom') return defaultMissionSnapshot(row.cell_id)
+  if (boardKindFor(board) === 'custom')
+    return defaultMissionSnapshot(row.cell_id)
   return null
 }
 
@@ -688,7 +704,11 @@ export class BoardsService {
 
   async listUserBoards(
     userId: string,
-    options: BoardListQueryInput = { status: 'all', limit: 50 },
+    options: BoardListQueryInput = {
+      status: 'all',
+      limit: 50,
+      includePreview: false,
+    },
   ) {
     let query = this.admin
       .from('boards')
@@ -726,7 +746,7 @@ export class BoardsService {
       cellsByBoard.set(cell.board_id, list)
     })
 
-    return boardRows
+    const entries = boardRows
       .map((board) => {
         const boardCells = cellsByBoard.get(board.id) ?? []
         return {
@@ -743,7 +763,15 @@ export class BoardsService {
           item.isFullyCompleted
         )
       })
-      .map(({ item }) => item)
+    if (!options.includePreview) {
+      return entries.map(({ item }) => item)
+    }
+
+    const previews = await this.createHistoryMediaPreviews(userId, entries)
+    return entries.map(({ item }) => ({
+      ...item,
+      mediaPreview: previews.get(item.id) ?? null,
+    }))
   }
 
   async getUserBoardDetail(userId: string, boardId: string) {
@@ -1037,7 +1065,10 @@ export class BoardsService {
     const snapshotsByPosition = new Map(
       cells
         .filter((cell) => Boolean(cell.mission_snapshot))
-        .map((cell) => [cell.position, cell.mission_snapshot as MissionSnapshot]),
+        .map((cell) => [
+          cell.position,
+          cell.mission_snapshot as MissionSnapshot,
+        ]),
     )
     const boardKind = boardKindFor(row)
 
@@ -1097,7 +1128,8 @@ export class BoardsService {
       cellIds: row.cell_ids,
       missionSnapshots: row.cell_ids.map((cellId, position) =>
         boardKind === 'custom'
-          ? (snapshotsByPosition.get(position) ?? defaultMissionSnapshot(cellId))
+          ? (snapshotsByPosition.get(position) ??
+            defaultMissionSnapshot(cellId))
           : snapshotsByPosition.get(position),
       ),
       markedPositions: Array.from(markedPositions).sort((a, b) => a - b),
@@ -1161,6 +1193,91 @@ export class BoardsService {
     }
 
     return { ...params.session, boardId, photos: adoptedPhotos, updatedAt: now }
+  }
+
+  private async createHistoryMediaPreviews(
+    userId: string,
+    entries: readonly { board: BoardRow; cells: readonly BoardCellRow[] }[],
+  ) {
+    const representativeCells = new Map<string, BoardCellRow>()
+    const clipIds: string[] = []
+    const photoIds: string[] = []
+
+    entries.forEach(({ board, cells }) => {
+      const cell = representativeMediaCell(cells)
+      if (!cell) return
+
+      representativeCells.set(board.id, cell)
+      if (cell.clip_id) {
+        clipIds.push(cell.clip_id)
+      } else if (cell.photo_id) {
+        photoIds.push(cell.photo_id)
+      }
+    })
+
+    const [clips, photos] = await Promise.all([
+      clipIds.length ? this.getHistoryClips(userId, clipIds) : [],
+      photoIds.length ? this.getHistoryPhotos(userId, photoIds) : [],
+    ])
+    const clipsById = new Map(clips.map((clip) => [clip.id, clip]))
+    const photosById = new Map(photos.map((photo) => [photo.id, photo]))
+    const previews = new Map<string, unknown>()
+
+    await Promise.all(
+      entries.map(async ({ board }) => {
+        const cell = representativeCells.get(board.id)
+        if (!cell) return
+
+        try {
+          if (cell.clip_id) {
+            const clip = clipsById.get(cell.clip_id)
+            if (!clip?.poster_storage_path) return
+            const preview = await this.createClipPreviewUrls(
+              clip.storage_path,
+              clip.poster_storage_path,
+              clip,
+            )
+            previews.set(board.id, {
+              kind: 'clip',
+              url: preview.clipUrl,
+              thumbnailUrl: preview.posterUrl,
+              expiresAt: preview.clipUrlExpiresAt,
+              position: cell.position,
+              cellId: cell.cell_id,
+              durationMs: clip.duration_ms,
+              clipUrl: preview.clipUrl,
+              clipUrlExpiresAt: preview.clipUrlExpiresAt,
+              posterUrl: preview.posterUrl,
+              posterUrlExpiresAt: preview.posterUrlExpiresAt,
+            })
+            return
+          }
+
+          if (cell.photo_id) {
+            const photo = photosById.get(cell.photo_id)
+            if (!photo) return
+            const preview = await this.createPhotoPreviewUrl(
+              photo.storage_path,
+              photo,
+            )
+            previews.set(board.id, {
+              kind: 'photo',
+              url: preview.previewUrl,
+              thumbnailUrl: preview.previewUrl,
+              expiresAt: preview.previewUrlExpiresAt,
+              position: cell.position,
+              cellId: cell.cell_id,
+              previewUrl: preview.previewUrl,
+              previewUrlExpiresAt: preview.previewUrlExpiresAt,
+            })
+          }
+        } catch {
+          previews.set(board.id, null)
+        }
+      }),
+    )
+
+    return previews
   }
 
   private async getBoardForUser(userId: string, boardId: string) {

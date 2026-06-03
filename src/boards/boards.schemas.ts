@@ -5,12 +5,18 @@ import { MAX_CLIP_DESCRIPTION_LENGTH } from '@/media/media.constants'
 export const boardModeSchema = z.enum(['5x5', '3x3'])
 export const boardKindSchema = z.enum(['mission', 'custom'])
 export const boardListStatusSchema = z.enum(['completed', 'active', 'all'])
+const queryBooleanSchema = z.preprocess((value) => {
+  if (value === undefined) return undefined
+  if (value === true || value === 'true') return true
+  if (value === false || value === 'false') return false
+  return value
+}, z.boolean())
 
-export const boardListQuerySchema = z
-  .object({
-    status: boardListStatusSchema.default('all'),
-    limit: z.coerce.number().int().min(1).max(50).default(50),
-  })
+export const boardListQuerySchema = z.object({
+  status: boardListStatusSchema.default('all'),
+  limit: z.coerce.number().int().min(1).max(50).default(50),
+  includePreview: queryBooleanSchema.default(false),
+})
 
 export function boardSizeForMode(mode: z.infer<typeof boardModeSchema>) {
   return mode === '3x3' ? 9 : 25
@@ -101,7 +107,8 @@ function validateBoardShape(
         ctx.addIssue({
           code: 'custom',
           path: ['missionSnapshots', position, 'id'],
-          message: 'Mission snapshot id must match the cell id at the same position.',
+          message:
+            'Mission snapshot id must match the cell id at the same position.',
         })
       }
     })

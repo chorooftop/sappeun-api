@@ -102,22 +102,36 @@ describe('boardListQuerySchema', () => {
     expect(boardListQuerySchema.parse({})).toEqual({
       status: 'all',
       limit: 50,
+      includePreview: false,
     })
   })
 
   it('accepts completed status and coerces string limit', () => {
     expect(
-      boardListQuerySchema.parse({ status: 'completed', limit: '12' }),
+      boardListQuerySchema.parse({
+        status: 'completed',
+        limit: '12',
+        includePreview: 'true',
+      }),
     ).toEqual({
       status: 'completed',
       limit: 12,
+      includePreview: true,
+    })
+  })
+
+  it('coerces false preview query strings without enabling previews', () => {
+    expect(boardListQuerySchema.parse({ includePreview: 'false' })).toEqual({
+      status: 'all',
+      limit: 50,
+      includePreview: false,
     })
   })
 
   it('rejects unknown status and out-of-range limits', () => {
-    expect(
-      boardListQuerySchema.safeParse({ status: 'unknown' }).success,
-    ).toBe(false)
+    expect(boardListQuerySchema.safeParse({ status: 'unknown' }).success).toBe(
+      false,
+    )
     expect(boardListQuerySchema.safeParse({ limit: '0' }).success).toBe(false)
     expect(boardListQuerySchema.safeParse({ limit: '51' }).success).toBe(false)
   })

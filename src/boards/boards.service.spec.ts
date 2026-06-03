@@ -62,8 +62,7 @@ function cell(
 function completedCells(): BoardCellRow[] {
   return Array.from({ length: 9 }, (_, position) =>
     cell(position, {
-      completed_at:
-        position === 4 ? null : '2026-06-03T00:20:00.000Z',
+      completed_at: position === 4 ? null : '2026-06-03T00:20:00.000Z',
       completion_type: position === 4 ? null : 'no_media',
     }),
   )
@@ -214,7 +213,10 @@ describe('BoardsService.endUserBoard', () => {
       },
       events,
     )
-    const service = new BoardsService({} as never, { adminClient: admin } as never)
+    const service = new BoardsService(
+      {} as never,
+      { adminClient: admin } as never,
+    )
 
     await expect(service.endUserBoard('user-1', 'board-1')).resolves.toEqual({
       id: 'board-1',
@@ -250,11 +252,14 @@ describe('BoardsService.endUserBoard', () => {
       },
       events,
     )
-    const service = new BoardsService({} as never, { adminClient: admin } as never)
-
-    await expect(service.endUserBoard('user-1', 'board-1')).rejects.toBeInstanceOf(
-      BadRequestException,
+    const service = new BoardsService(
+      {} as never,
+      { adminClient: admin } as never,
     )
+
+    await expect(
+      service.endUserBoard('user-1', 'board-1'),
+    ).rejects.toBeInstanceOf(BadRequestException)
     expect(events.some((event) => event.type === 'update')).toBe(false)
   })
 })
@@ -298,10 +303,17 @@ describe('BoardsService.listUserBoards', () => {
       },
       events,
     )
-    const service = new BoardsService({} as never, { adminClient: admin } as never)
+    const service = new BoardsService(
+      {} as never,
+      { adminClient: admin } as never,
+    )
 
     await expect(
-      service.listUserBoards('user-1', { status: 'completed', limit: 50 }),
+      service.listUserBoards('user-1', {
+        status: 'completed',
+        limit: 50,
+        includePreview: false,
+      }),
     ).resolves.toEqual([
       expect.objectContaining({
         id: 'board-1',
@@ -313,6 +325,86 @@ describe('BoardsService.listUserBoards', () => {
         isFullyCompleted: true,
         mediaCount: 0,
         thumbnailUrls: [],
+      }),
+    ])
+  })
+
+  it('adds a representative clip preview when requested', async () => {
+    const events: QueryEvent[] = []
+    const completedBoard = baseBoard({
+      ended_at: '2026-06-03T00:30:00.000Z',
+    })
+    const cells = completedCells().map((row) =>
+      row.position === 1 ? { ...row, clip_id: 'clip-1' } : row,
+    )
+    const admin = makeAdmin(
+      {
+        boards: [
+          makeQuery(
+            'list-boards',
+            { data: [completedBoard], error: null },
+            events,
+          ),
+        ],
+        board_cells: [
+          makeQuery('select-cells', { data: cells, error: null }, events),
+        ],
+        clips: [
+          makeQuery(
+            'select-clips',
+            {
+              data: [
+                {
+                  id: 'clip-1',
+                  user_id: 'user-1',
+                  board_id: 'board-1',
+                  position: 1,
+                  cell_id: 'cell-1',
+                  storage_path: 'clip.mp4',
+                  poster_storage_path: 'poster.jpg',
+                  duration_ms: 1200,
+                  uploaded_at: '2026-06-03T00:21:00.000Z',
+                  recorded_at: '2026-06-03T00:20:00.000Z',
+                  description: 'clip description',
+                  deleted_at: null,
+                },
+              ],
+              error: null,
+            },
+            events,
+          ),
+        ],
+      },
+      events,
+    )
+    const r2 = {
+      createPreviewUrl: async (input: { objectKey: string }) =>
+        `https://preview.example/${input.objectKey}`,
+    }
+    const service = new BoardsService(
+      r2 as never,
+      { adminClient: admin } as never,
+    )
+
+    await expect(
+      service.listUserBoards('user-1', {
+        status: 'completed',
+        limit: 50,
+        includePreview: true,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: 'board-1',
+        mediaPreview: expect.objectContaining({
+          kind: 'clip',
+          url: 'https://preview.example/clip.mp4',
+          thumbnailUrl: 'https://preview.example/poster.jpg',
+          clipUrl: 'https://preview.example/clip.mp4',
+          posterUrl: 'https://preview.example/poster.jpg',
+          position: 1,
+          cellId: 'cell-1',
+          durationMs: 1200,
+        }),
       }),
     ])
   })
