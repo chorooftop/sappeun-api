@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest'
 import {
   boardListQuerySchema,
   boardSessionSchema,
+  editBoardCellMissionSchema,
+  endBoardSchema,
+  restoreBoardCellMissionSchema,
+  updateBoardTitleSchema,
 } from '@/boards/boards.schemas'
 
 function cells(count: number) {
@@ -134,5 +138,198 @@ describe('boardListQuerySchema', () => {
     )
     expect(boardListQuerySchema.safeParse({ limit: '0' }).success).toBe(false)
     expect(boardListQuerySchema.safeParse({ limit: '51' }).success).toBe(false)
+  })
+})
+
+describe('endBoardSchema', () => {
+  it('accepts an empty object (title is optional)', () => {
+    expect(endBoardSchema.parse({})).toEqual({})
+  })
+
+  it('accepts a valid title', () => {
+    expect(endBoardSchema.parse({ title: 'Morning walk' })).toEqual({
+      title: 'Morning walk',
+    })
+  })
+
+  it('trims whitespace from title', () => {
+    expect(endBoardSchema.parse({ title: '  Trimmed  ' })).toEqual({
+      title: 'Trimmed',
+    })
+  })
+
+  it('accepts a title at the 24-character boundary', () => {
+    const title = 'a'.repeat(24)
+    expect(endBoardSchema.parse({ title })).toEqual({ title })
+  })
+
+  it('rejects a title that exceeds 24 characters', () => {
+    expect(
+      endBoardSchema.safeParse({ title: 'a'.repeat(25) }).success,
+    ).toBe(false)
+  })
+
+  it('rejects a title that is empty after trimming', () => {
+    expect(endBoardSchema.safeParse({ title: '   ' }).success).toBe(false)
+  })
+
+  it('strips unknown keys without throwing (forward-compat)', () => {
+    const result = endBoardSchema.safeParse({
+      title: 'walk',
+      unknownField: 'ignored',
+    })
+    expect(result.success).toBe(true)
+    expect(result.data).not.toHaveProperty('unknownField')
+  })
+})
+
+describe('updateBoardTitleSchema', () => {
+  it('accepts a valid title', () => {
+    expect(updateBoardTitleSchema.parse({ title: 'Evening walk' })).toEqual({
+      title: 'Evening walk',
+    })
+  })
+
+  it('trims whitespace from title', () => {
+    expect(updateBoardTitleSchema.parse({ title: '  Padded  ' })).toEqual({
+      title: 'Padded',
+    })
+  })
+
+  it('accepts a title at the 24-character boundary', () => {
+    const title = 'b'.repeat(24)
+    expect(updateBoardTitleSchema.parse({ title })).toEqual({ title })
+  })
+
+  it('rejects a title that exceeds 24 characters', () => {
+    expect(
+      updateBoardTitleSchema.safeParse({ title: 'b'.repeat(25) }).success,
+    ).toBe(false)
+  })
+
+  it('rejects a missing title', () => {
+    expect(updateBoardTitleSchema.safeParse({}).success).toBe(false)
+  })
+
+  it('rejects an empty title after trimming', () => {
+    expect(updateBoardTitleSchema.safeParse({ title: '' }).success).toBe(false)
+    expect(updateBoardTitleSchema.safeParse({ title: '   ' }).success).toBe(
+      false,
+    )
+  })
+})
+
+describe('editBoardCellMissionSchema', () => {
+  it('accepts required fields only', () => {
+    expect(
+      editBoardCellMissionSchema.parse({ cellId: 'n01', title: 'Find a flower' }),
+    ).toEqual({ cellId: 'n01', title: 'Find a flower' })
+  })
+
+  it('accepts all optional fields', () => {
+    expect(
+      editBoardCellMissionSchema.parse({
+        cellId: 'n01',
+        title: 'Find a flower',
+        description: 'Look for flowers near the path.',
+        captureLabel: 'Pink flower',
+      }),
+    ).toEqual({
+      cellId: 'n01',
+      title: 'Find a flower',
+      description: 'Look for flowers near the path.',
+      captureLabel: 'Pink flower',
+    })
+  })
+
+  it('trims whitespace from title, description, and captureLabel', () => {
+    const result = editBoardCellMissionSchema.parse({
+      cellId: 'n01',
+      title: '  Trimmed title  ',
+      description: '  Trimmed desc  ',
+      captureLabel: '  Label  ',
+    })
+    expect(result).toEqual({
+      cellId: 'n01',
+      title: 'Trimmed title',
+      description: 'Trimmed desc',
+      captureLabel: 'Label',
+    })
+  })
+
+  it('accepts a title at the 40-character boundary', () => {
+    const title = 'c'.repeat(40)
+    expect(
+      editBoardCellMissionSchema.parse({ cellId: 'n01', title }),
+    ).toEqual({ cellId: 'n01', title })
+  })
+
+  it('rejects a title that exceeds 40 characters', () => {
+    expect(
+      editBoardCellMissionSchema.safeParse({
+        cellId: 'n01',
+        title: 'c'.repeat(41),
+      }).success,
+    ).toBe(false)
+  })
+
+  it('rejects a description that exceeds 160 characters', () => {
+    expect(
+      editBoardCellMissionSchema.safeParse({
+        cellId: 'n01',
+        title: 'Valid',
+        description: 'd'.repeat(161),
+      }).success,
+    ).toBe(false)
+  })
+
+  it('rejects a captureLabel that exceeds 40 characters', () => {
+    expect(
+      editBoardCellMissionSchema.safeParse({
+        cellId: 'n01',
+        title: 'Valid',
+        captureLabel: 'e'.repeat(41),
+      }).success,
+    ).toBe(false)
+  })
+
+  it('rejects a missing cellId', () => {
+    expect(
+      editBoardCellMissionSchema.safeParse({ title: 'Valid' }).success,
+    ).toBe(false)
+  })
+
+  it('rejects an empty title after trimming', () => {
+    expect(
+      editBoardCellMissionSchema.safeParse({
+        cellId: 'n01',
+        title: '   ',
+      }).success,
+    ).toBe(false)
+  })
+})
+
+describe('restoreBoardCellMissionSchema', () => {
+  it('accepts a valid cellId', () => {
+    expect(restoreBoardCellMissionSchema.parse({ cellId: 'n01' })).toEqual({
+      cellId: 'n01',
+    })
+  })
+
+  it('rejects a missing cellId', () => {
+    expect(restoreBoardCellMissionSchema.safeParse({}).success).toBe(false)
+  })
+
+  it('rejects an empty cellId', () => {
+    expect(
+      restoreBoardCellMissionSchema.safeParse({ cellId: '' }).success,
+    ).toBe(false)
+  })
+
+  it('rejects a cellId that exceeds 80 characters', () => {
+    expect(
+      restoreBoardCellMissionSchema.safeParse({ cellId: 'f'.repeat(81) })
+        .success,
+    ).toBe(false)
   })
 })

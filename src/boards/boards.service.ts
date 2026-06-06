@@ -1,15 +1,25 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
 
+import { BadgesService } from '@/badges/badges.service'
+import type {
+  BoardBadgeWithCatalog,
+  EarnedBadge,
+} from '@/badges/badges.service'
 import type {
   BoardListQueryInput,
   BoardSessionInput,
   BoardSnapshotInput,
+  EditBoardCellMissionInput,
+  EndBoardInput,
+  RestoreBoardCellMissionInput,
+  UpdateBoardTitleInput,
 } from '@/boards/boards.schemas'
-import { boardSizeForMode } from '@/boards/boards.schemas'
+import { boardSizeForMode, missionSnapshotSchema } from '@/boards/boards.schemas'
 import { SIGNED_PREVIEW_EXPIRES_SECONDS } from '@/media/media.constants'
 import { signedUrlExpiresAt } from '@/media/media.utils'
 import { R2Service } from '@/storage/r2.service'
@@ -19,6 +29,7 @@ export type BoardMode = '5x5' | '3x3'
 export type BoardKind = 'mission' | 'custom'
 export type BoardHistoryStatus = 'active' | 'completed'
 export type CompletionType = 'photo' | 'no_photo' | 'clip' | 'no_media' | 'free'
+export type BoardCustomizationStatus = 'official' | 'edited'
 
 interface BoardIdRow {
   id: string
@@ -50,6 +61,7 @@ export interface BoardRow {
   updated_at: string | null
   ended_at: string | null
   deleted_at?: string | null
+  customization_status?: BoardCustomizationStatus | null
 }
 
 export interface BoardCellRow {
@@ -66,6 +78,9 @@ export interface BoardCellRow {
   mission_category?: string | null
   mission_snapshot?: MissionSnapshot | null
   mission_catalog_version?: string | null
+  original_cell_id?: string | null
+  original_mission_snapshot?: MissionSnapshot | null
+  edited_at?: string | null
 }
 
 interface PhotoRow {
@@ -102,7 +117,7 @@ interface ClipRow {
 const MISSION_CATALOG_VERSION = 'api-migration-v1'
 
 const BOARD_CELL_EXTENDED_SELECT =
-  'board_id, position, cell_id, photo_id, clip_id, marked_at, completed_at, completion_type, mission_label, mission_capture_label, mission_category, mission_snapshot, mission_catalog_version'
+  'board_id, position, cell_id, photo_id, clip_id, marked_at, completed_at, completion_type, mission_label, mission_capture_label, mission_category, mission_snapshot, mission_catalog_version, original_cell_id, original_mission_snapshot, edited_at'
 
 const PHOTO_HISTORY_SELECT =
   'id, user_id, board_id, position, cell_id, storage_path, storage_provider, bucket_name, uploaded_at, captured_at, deleted_at'
@@ -111,7 +126,7 @@ const CLIP_HISTORY_SELECT =
   'id, user_id, board_id, position, cell_id, storage_path, poster_storage_path, storage_provider, bucket_name, duration_ms, uploaded_at, recorded_at, description, deleted_at'
 
 const BOARD_HISTORY_SELECT =
-  'id, user_id, mode, board_kind, client_session_id, nickname, title, description, free_position, cell_ids, created_at, updated_at, ended_at, deleted_at'
+  'id, user_id, mode, board_kind, client_session_id, nickname, title, description, free_position, cell_ids, created_at, updated_at, ended_at, deleted_at, customization_status'
 
 const COMPLETION_TYPES = new Set<CompletionType>([
   'photo',
@@ -347,6 +362,37 @@ export function summarizeBoardCompletion(
   }
 }
 
+export interface BoardCustomization {
+  editedCellCount: number
+  customizationStatus: BoardCustomizationStatus
+  badgeEligible: boolean
+}
+
+function computeBoardCustomization(
+  board: BoardRow,
+  cells: readonly BoardCellRow[],
+): BoardCustomization {
+  const editedCellCount = cells.filter(
+    (cell) => cell.original_mission_snapshot != null,
+  ).length
+
+  const customizationStatus: BoardCustomizationStatus =
+    editedCellCount > 0
+      ? 'edited'
+      : board.customization_status === 'edited' ||
+          boardKindFor(board) === 'custom'
+        ? 'edited'
+        : 'official'
+
+  const summary = summarizeBoardCompletion(board, cells)
+  const badgeEligible =
+    boardKindFor(board) === 'mission' &&
+    editedCellCount === 0 &&
+    summary.isFullyCompleted
+
+  return { editedCellCount, customizationStatus, badgeEligible }
+}
+
 function boardHistoryStatus(board: BoardRow): BoardHistoryStatus {
   return board.ended_at ? 'completed' : 'active'
 }
@@ -382,8 +428,13 @@ function hasCompleteCompletionSnapshot(
   })
 }
 
-function toHistoryItem(board: BoardRow, cells: readonly BoardCellRow[]) {
+function toHistoryItem(
+  board: BoardRow,
+  cells: readonly BoardCellRow[],
+  badgeCount = 0,
+) {
   const summary = summarizeBoardCompletion(board, cells)
+  const customization = computeBoardCustomization(board, cells)
 
   return {
     id: board.id,
@@ -399,6 +450,11 @@ function toHistoryItem(board: BoardRow, cells: readonly BoardCellRow[]) {
     endedAt: board.ended_at,
     thumbnailUrls: [],
     ...summary,
+    customizationStatus: customization.customizationStatus,
+    editedCellCount: customization.editedCellCount,
+    badgeEligible: customization.badgeEligible,
+    badgeCount,
+    earnedBadgeCount: badgeCount,
   }
 }
 
@@ -416,13 +472,28 @@ function representativeMediaCell(cells: readonly BoardCellRow[]) {
 function toBoardCompletionCloseResponse(
   board: BoardRow,
   cells: readonly BoardCellRow[],
+  badgeInfo: { badgeCount: number; earnedBadges: EarnedBadge[] },
 ) {
   const summary = summarizeBoardCompletion(board, cells)
+  const customization = computeBoardCustomization(board, cells)
 
   return {
     id: board.id,
+    title: boardTitleFor(board),
     endedAt: board.ended_at,
     ...summary,
+    customizationStatus: customization.customizationStatus,
+    editedCellCount: customization.editedCellCount,
+    badgeEligible: customization.badgeEligible,
+    badgeCount: badgeInfo.badgeCount,
+    earnedBadges: badgeInfo.earnedBadges,
+  }
+}
+
+function missionWithCaptureFallback(snapshot: MissionSnapshot): MissionSnapshot {
+  return {
+    ...snapshot,
+    captureLabel: snapshot.captureLabel ?? snapshot.label,
   }
 }
 
@@ -460,6 +531,7 @@ export class BoardsService {
   constructor(
     private readonly r2: R2Service,
     private readonly supabase: SupabaseService,
+    private readonly badges: BadgesService,
   ) {}
 
   private get admin(): any {
@@ -746,13 +818,19 @@ export class BoardsService {
       cellsByBoard.set(cell.board_id, list)
     })
 
+    const badgesByBoard = await this.badges.getBoardBadges(
+      userId,
+      boardRows.map((board) => board.id),
+    )
+
     const entries = boardRows
       .map((board) => {
         const boardCells = cellsByBoard.get(board.id) ?? []
+        const badgeCount = badgesByBoard.get(board.id)?.length ?? 0
         return {
           board,
           cells: boardCells,
-          item: toHistoryItem(board, boardCells),
+          item: toHistoryItem(board, boardCells, badgeCount),
         }
       })
       .filter(({ board, cells, item }) => {
@@ -821,6 +899,14 @@ export class BoardsService {
       clips.forEach((clip) => clipsById.set(clip.id, clip))
     }
 
+    const badgesByBoard = await this.badges.getBoardBadges(userId, [board.id])
+    const boardBadges = badgesByBoard.get(board.id) ?? []
+    const customization = computeBoardCustomization(board, cells)
+    const badgeByMissionId = new Map<string, BoardBadgeWithCatalog>()
+    boardBadges.forEach((badge) => {
+      badgeByMissionId.set(badge.missionId, badge)
+    })
+
     const detailCells = await Promise.all(
       cells.map(async (cell) => {
         const photoPromise = (async () => {
@@ -856,10 +942,22 @@ export class BoardsService {
         })()
 
         const [photo, clip] = await Promise.all([photoPromise, clipPromise])
-        return detailCellFromRow(board, cell, photo, clip)
+        const isEdited = cell.original_mission_snapshot != null
+        const isFreePosition = cell.position === board.free_position
+        const missionId = cell.mission_snapshot?.id
+        const badge =
+          customization.badgeEligible && !isFreePosition && missionId
+            ? (badgeByMissionId.get(missionId) ?? null)
+            : null
+
+        return {
+          ...detailCellFromRow(board, cell, photo, clip),
+          isEdited,
+          badge,
+        }
       }),
     )
-    const item = toHistoryItem(board, cells)
+    const item = toHistoryItem(board, cells, boardBadges.length)
 
     return {
       ...item,
@@ -958,8 +1056,8 @@ export class BoardsService {
     return true
   }
 
-  async endUserBoard(userId: string, boardId: string) {
-    const board = await this.getBoardForUser(userId, boardId)
+  async endUserBoard(userId: string, boardId: string, input?: EndBoardInput) {
+    let board = await this.getBoardForUser(userId, boardId)
     if (!board) throw new NotFoundException('Board not found.')
 
     let cells = await this.getBoardCellsForBoard(board.id)
@@ -980,8 +1078,12 @@ export class BoardsService {
       throw new BadRequestException('Board is not fully completed.')
     }
 
+    if (input?.title) {
+      board = await this.applyBoardTitle(userId, board, input.title)
+    }
+
     if (board.ended_at) {
-      return toBoardCompletionCloseResponse(board, cells)
+      return this.resolveAlreadyEndedClose(userId, board, cells)
     }
 
     const now = new Date().toISOString()
@@ -996,14 +1098,343 @@ export class BoardsService {
 
     if (error) throw error
     const updated = data as BoardRow | null
-    if (updated) return toBoardCompletionCloseResponse(updated, cells)
+    if (updated) {
+      return this.resolveFreshClose(userId, updated, cells)
+    }
 
     const raced = await this.getBoardForUser(userId, boardId)
     if (raced?.ended_at) {
-      return toBoardCompletionCloseResponse(raced, cells)
+      return this.resolveAlreadyEndedClose(userId, raced, cells)
     }
 
     throw new NotFoundException('Board not found.')
+  }
+
+  private async applyBoardTitle(
+    userId: string,
+    board: BoardRow,
+    title: string,
+  ): Promise<BoardRow> {
+    const { data, error } = await this.admin
+      .from('boards')
+      .update({ title, updated_at: new Date().toISOString() })
+      .eq('id', board.id)
+      .eq('user_id', userId)
+      .select(BOARD_HISTORY_SELECT)
+      .maybeSingle()
+
+    if (error) throw error
+    return (data as BoardRow | null) ?? { ...board, title }
+  }
+
+  private async resolveFreshClose(
+    userId: string,
+    board: BoardRow,
+    cells: readonly BoardCellRow[],
+  ) {
+    const customization = computeBoardCustomization(board, cells)
+
+    if (!customization.badgeEligible) {
+      return toBoardCompletionCloseResponse(board, cells, {
+        badgeCount: 0,
+        earnedBadges: [],
+      })
+    }
+
+    const awarded = await this.badges.awardBoardBadges({
+      userId,
+      board,
+      cells,
+    })
+
+    return toBoardCompletionCloseResponse(board, cells, {
+      badgeCount: awarded.badgeCount,
+      earnedBadges: awarded.earnedBadges,
+    })
+  }
+
+  private async resolveAlreadyEndedClose(
+    userId: string,
+    board: BoardRow,
+    cells: readonly BoardCellRow[],
+  ) {
+    const customization = computeBoardCustomization(board, cells)
+
+    if (!customization.badgeEligible) {
+      return toBoardCompletionCloseResponse(board, cells, {
+        badgeCount: 0,
+        earnedBadges: [],
+      })
+    }
+
+    // Self-heal: idempotently re-attempt minting (RPC on-conflict makes this
+    // safe; already-minted board_badges never re-increment earned_count). Then
+    // read the actual persisted badges to populate the response.
+    await this.badges.awardBoardBadges({ userId, board, cells })
+
+    const badgesByBoard = await this.badges.getBoardBadges(userId, [board.id])
+    const boardBadges = badgesByBoard.get(board.id) ?? []
+
+    return toBoardCompletionCloseResponse(board, cells, {
+      badgeCount: boardBadges.length,
+      earnedBadges: boardBadges.map((badge) => ({
+        ...badge,
+        isFirstEarn: false,
+      })),
+    })
+  }
+
+  async updateBoardTitle(
+    userId: string,
+    boardId: string,
+    input: UpdateBoardTitleInput,
+  ) {
+    const board = await this.getBoardForUser(userId, boardId)
+    if (!board) throw new NotFoundException('Board not found.')
+
+    if (board.ended_at) {
+      const cells = await this.getBoardCellsForBoard(board.id)
+      const summary = summarizeBoardCompletion(board, cells)
+      if (!summary.isFullyCompleted) {
+        throw new ConflictException(
+          'Ended boards can only be renamed when fully completed.',
+        )
+      }
+    }
+
+    const now = new Date().toISOString()
+    const { data, error } = await this.admin
+      .from('boards')
+      .update({ title: input.title, updated_at: now })
+      .eq('id', boardId)
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .select('id, title, updated_at')
+      .maybeSingle()
+
+    if (error) throw error
+    const updated = data as
+      | { id: string; title: string | null; updated_at: string | null }
+      | null
+    if (!updated) throw new NotFoundException('Board not found.')
+
+    return {
+      id: updated.id,
+      title: updated.title,
+      updatedAt: updated.updated_at ?? now,
+    }
+  }
+
+  async editBoardCellMission(
+    userId: string,
+    boardId: string,
+    position: number,
+    input: EditBoardCellMissionInput,
+  ) {
+    const board = await this.getBoardForUser(userId, boardId)
+    if (!board) throw new NotFoundException('Board not found.')
+
+    if (board.ended_at) {
+      throw new ConflictException('Ended boards cannot be edited.')
+    }
+
+    if (position === board.free_position) {
+      throw new ConflictException('Free cell cannot be edited.')
+    }
+
+    if (board.cell_ids?.[position] !== input.cellId) {
+      throw new BadRequestException('cellId must match the board position.')
+    }
+
+    const cell = await this.getBoardCell(board.id, position)
+    if (!cell) throw new NotFoundException('Board cell not found.')
+
+    if (
+      cell.photo_id ||
+      cell.clip_id ||
+      cell.marked_at ||
+      cell.completed_at ||
+      cell.completion_type
+    ) {
+      throw new ConflictException('Completed cells cannot be edited.')
+    }
+
+    const baseSnapshot: MissionSnapshot =
+      cell.mission_snapshot ?? defaultMissionSnapshot(cell.cell_id)
+
+    const mergedSnapshot: MissionSnapshot = {
+      ...baseSnapshot,
+      label: input.title,
+      ...(input.description !== undefined ? { hint: input.description } : {}),
+      ...(input.captureLabel !== undefined
+        ? { captureLabel: input.captureLabel }
+        : {}),
+    }
+
+    const parsed = missionSnapshotSchema.safeParse(mergedSnapshot)
+    if (!parsed.success) {
+      throw new BadRequestException('Invalid mission edit.')
+    }
+    const validatedSnapshot = parsed.data as MissionSnapshot
+
+    const now = new Date().toISOString()
+    const update: Record<string, unknown> = {
+      mission_snapshot: validatedSnapshot,
+      mission_label: input.title,
+      edited_at: now,
+    }
+    if (input.description !== undefined) {
+      update.mission_hint = input.description
+    }
+    if (input.captureLabel !== undefined) {
+      update.mission_capture_label = input.captureLabel
+    }
+    if (cell.original_mission_snapshot == null) {
+      update.original_cell_id = cell.cell_id
+      update.original_mission_snapshot = cell.mission_snapshot ?? baseSnapshot
+    }
+
+    const { error: cellError } = await this.admin
+      .from('board_cells')
+      .update(update)
+      .eq('board_id', board.id)
+      .eq('position', position)
+
+    if (cellError) throw cellError
+
+    const { error: boardError } = await this.admin
+      .from('boards')
+      .update({ customization_status: 'edited', updated_at: now })
+      .eq('id', board.id)
+      .eq('user_id', userId)
+
+    if (boardError) throw boardError
+
+    const cells = await this.getBoardCellsForBoard(board.id)
+    const updatedCell = cells.find((row) => row.position === position) ?? {
+      ...cell,
+      mission_snapshot: validatedSnapshot,
+      edited_at: now,
+    }
+    const customization = computeBoardCustomization(
+      { ...board, customization_status: 'edited' },
+      cells,
+    )
+
+    return {
+      ok: true,
+      board: {
+        id: board.id,
+        customizationStatus: customization.customizationStatus,
+        editedCellCount: customization.editedCellCount,
+        badgeEligible: false,
+      },
+      cell: {
+        position,
+        cellId: updatedCell.cell_id,
+        editedAt: updatedCell.edited_at ?? now,
+        mission: missionWithCaptureFallback(validatedSnapshot),
+      },
+    }
+  }
+
+  async restoreBoardCellMission(
+    userId: string,
+    boardId: string,
+    position: number,
+    input: RestoreBoardCellMissionInput,
+  ) {
+    const board = await this.getBoardForUser(userId, boardId)
+    if (!board) throw new NotFoundException('Board not found.')
+
+    if (board.ended_at) {
+      throw new ConflictException('Ended boards cannot be edited.')
+    }
+
+    if (position === board.free_position) {
+      throw new ConflictException('Free cell cannot be edited.')
+    }
+
+    const cell = await this.getBoardCell(board.id, position)
+    if (!cell) throw new NotFoundException('Board cell not found.')
+
+    if (
+      cell.photo_id ||
+      cell.clip_id ||
+      cell.marked_at ||
+      cell.completed_at ||
+      cell.completion_type
+    ) {
+      throw new ConflictException('Completed cells cannot be edited.')
+    }
+
+    if (cell.original_mission_snapshot == null) {
+      throw new ConflictException('Original mission snapshot is unavailable.')
+    }
+
+    if (input.cellId !== cell.cell_id && input.cellId !== cell.original_cell_id) {
+      throw new BadRequestException('cellId must match the board position.')
+    }
+
+    const restoredSnapshot = cell.original_mission_snapshot
+    const restoredCellId = cell.original_cell_id ?? cell.cell_id
+    const now = new Date().toISOString()
+
+    const { error: cellError } = await this.admin
+      .from('board_cells')
+      .update({
+        cell_id: restoredCellId,
+        mission_snapshot: restoredSnapshot,
+        mission_label: restoredSnapshot.label ?? null,
+        mission_hint: restoredSnapshot.hint ?? null,
+        mission_capture_label: restoredSnapshot.captureLabel ?? null,
+        original_cell_id: null,
+        original_mission_snapshot: null,
+        edited_at: null,
+      })
+      .eq('board_id', board.id)
+      .eq('position', position)
+
+    if (cellError) throw cellError
+
+    const cells = await this.getBoardCellsForBoard(board.id)
+    const customization = computeBoardCustomization(
+      { ...board, customization_status: 'edited' },
+      cells,
+    )
+    const nextStatus: BoardCustomizationStatus =
+      customization.editedCellCount === 0 ? 'official' : 'edited'
+
+    const { error: boardError } = await this.admin
+      .from('boards')
+      .update({ customization_status: nextStatus, updated_at: now })
+      .eq('id', board.id)
+      .eq('user_id', userId)
+
+    if (boardError) throw boardError
+
+    const updatedCell = cells.find((row) => row.position === position) ?? {
+      ...cell,
+      cell_id: restoredCellId,
+      mission_snapshot: restoredSnapshot,
+      edited_at: null,
+    }
+
+    return {
+      ok: true,
+      board: {
+        id: board.id,
+        customizationStatus: nextStatus,
+        editedCellCount: customization.editedCellCount,
+        badgeEligible: false,
+      },
+      cell: {
+        position,
+        cellId: updatedCell.cell_id,
+        editedAt: updatedCell.edited_at ?? null,
+        mission: missionWithCaptureFallback(restoredSnapshot),
+      },
+    }
   }
 
   async deleteUserBoard(userId: string, boardId: string) {
@@ -1312,6 +1743,18 @@ export class BoardsService {
 
     if (error) throw error
     return (data ?? []) as BoardCellRow[]
+  }
+
+  private async getBoardCell(boardId: string, position: number) {
+    const { data, error } = await this.admin
+      .from('board_cells')
+      .select(BOARD_CELL_EXTENDED_SELECT)
+      .eq('board_id', boardId)
+      .eq('position', position)
+      .maybeSingle()
+
+    if (error) throw error
+    return data as BoardCellRow | null
   }
 
   private async getHistoryPhotos(userId: string, photoIds: readonly string[]) {

@@ -1,26 +1,41 @@
 # Supabase 스키마 스냅샷 (Phase 0 진단 결과)
 
 ```
-조사일:   2026-05-31 KST
+조사일:   2026-05-31 KST (0001 기준) / 0006 추가: 2026-06-05
 방법:     PostgREST OpenAPI + 직접 SQL 진단(psql, ap-south-1 풀러)
 프로젝트:  wtptvgxyqkqqsfkdsoox (리전: ap-south-1)
 정식 덤프: supabase/migrations/0001_remote_baseline.sql (초기화 기준 schema-only baseline, 1150줄)
 진단 도구: scripts/introspect-schema.mjs(REST), scripts/introspect.sql(psql)
+최신 migration: 0006_bingo_editable_badges.sql
 ```
 
 > **Phase 0 완료.** 컬럼·타입·RLS·FK·CHECK·트리거까지 전부 실측 확정.
 > 현재 서비스는 운영 중이 아니므로 별도 운영 마이그레이션, backfill, 레거시 데이터 호환 fallback은 만들지 않는다.
 > DB는 `0001_remote_baseline.sql` 기준으로 초기화해 최신 API 스키마와 맞춘다.
+>
+> **0006 추가 (2026-06-05).** `boards.customization_status`, `board_cells` original columns,
+> `mission_badges` / `board_badges` / `user_badges` tables, `award_board_badges` RPC,
+> 47-mission catalog seed (sheet.json v1.3.0, catalog_version='api-migration-v1').
+> 신규 badge tables는 v1에서 backend API 전용으로 닫는다. `service_role`에만 table read/write를
+> 명시 grant하고 `anon`/`authenticated`/`public` table privilege는 revoke한다.
+>
+> **0007 추가 (2026-06-05).** `0006` 적용 후 Supabase performance advisor가 신규 badge table
+> FK 미인덱스 INFO를 보고해 보정 인덱스를 추가한다.
+>
+> **0008 추가 (2026-06-05).** `award_board_badges`의 PL/pgSQL 출력 컬럼 `badge_id`와
+> `on conflict` 컬럼 참조 ambiguity를 피하도록 primary-key constraint target을 명시한다.
 
 ---
 
 ## public 스키마 객체
 
 테이블: `board_cells, boards, clips, guest_clip_uploads, guest_photo_uploads,
-photos, profiles, shares, user_consents`
+photos, profiles, shares, user_consents,
+mission_badges, board_badges, user_badges` *(0006 추가)*
 뷰: `shared_board_view`
 함수: `require_current_consents_for_signup()`, `set_updated_at()`,
-`confirm_user_photo_upload()`, `confirm_user_clip_upload()`
+`confirm_user_photo_upload()`, `confirm_user_clip_upload()`,
+`award_board_badges(uuid, uuid, text[])` *(0006 추가, security definer, service_role 전용)*
 
 ## media / mission board 기준 스키마 (현행 목표)
 
@@ -34,9 +49,13 @@ photos, profiles, shares, user_consents`
 | 컬럼 | 타입 | NULL | 기본값 |
 |---|---|---|---|
 | board_kind | text | NO | `mission` (CHECK ∈ {mission, custom}) |
-| title | text | YES | — |
+| title | text | YES | — (CHECK char_length ≤ 24 via `boards_title_length_check`) |
 | description | text | YES | — |
 | deleted_at | timestamptz | YES | — |
+| customization_status | text | NO | `official` (CHECK ∈ {official, edited}, `boards_customization_status_check`) *(0006)* |
+
+- `edited_cell_count`는 저장하지 않는다. read-time 파생값: `count(board_cells where original_mission_snapshot IS NOT NULL)`.
+- 기존 `board_kind='custom'` 행은 backfill로 `customization_status='edited'` 처리됨.
 
 ### board_cells
 
@@ -46,8 +65,86 @@ photos, profiles, shares, user_consents`
 | completed_at | timestamptz | YES | 완료 시각 |
 | completion_type | text | YES | CHECK ∈ {photo, no_photo, clip, no_media, free} |
 | mission_snapshot | jsonb | YES | 셀별 미션 스냅샷 |
+| original_cell_id | text | YES | 편집 전 원본 cell_id *(0006)* |
+| original_mission_snapshot | jsonb | YES | 편집 전 원본 스냅샷 (IS NOT NULL이면 편집된 셀) *(0006)* |
+| edited_at | timestamptz | YES | 최초 편집 시각 *(0006)* |
 
 - `photo_id`와 `clip_id`는 동시에 채울 수 없다(`board_cells_single_media_check`).
+
+### mission_badges *(0006)*
+
+| 컬럼 | 타입 | NULL | 비고 |
+|---|---|---|---|
+| id | text | NO | PK. 형식: `mission:<mission_id>:v1` |
+| mission_id | text | NO | sheet.json cell id (n01, m01, sf01 등) |
+| catalog_version | text | NO | 현재: `api-migration-v1` |
+| title | text | NO | CHECK char_length ≤ 40 |
+| category | text | YES | nature/manmade/animal/time/self/color |
+| difficulty | text | NO | CHECK ∈ {easy, medium, hard} |
+| grade_label | text | NO | easy→'일상 배지', medium→'도전 배지' |
+| grade_color | text | NO | easy→'#6ED6A0', medium→'#F5A623' |
+| artwork_key | text | YES | 예: `mission/n01` |
+| sort_order | integer | NO | 0 default, 10 단위 증가 |
+| active | boolean | NO | true default |
+| created_at | timestamptz | NO | now() |
+
+- UNIQUE `(catalog_version, mission_id)`.
+- Table privileges: `service_role` read/write only. `public`/`anon`/`authenticated` revoked.
+- RLS enabled. `mission_badges_select_active`: `active = true` 인 행만 authenticated 조회
+  (향후 table SELECT grant를 열 때 적용; backend API는 service_role으로 RLS 우회).
+- 47개 시드 (`api-migration-v1`, sheet.json v1.3.0). 제외: `id='free'` (category='special', 중앙 free 슬롯).
+
+### board_badges *(0006)*
+
+| 컬럼 | 타입 | NULL | 비고 |
+|---|---|---|---|
+| board_id | uuid | NO | FK→boards ON DELETE CASCADE |
+| badge_id | text | NO | FK→mission_badges ON DELETE RESTRICT |
+| user_id | uuid | NO | FK→auth.users ON DELETE CASCADE |
+| earned_at | timestamptz | NO | now() default |
+
+- PK `(board_id, badge_id)`.
+- INDEX `board_badges_user_board_idx (user_id, board_id)`.
+- INDEX `board_badges_badge_idx (badge_id)` *(0007)*.
+- Table privileges: `service_role` read/write only. `public`/`anon`/`authenticated` revoked.
+- RLS enabled. `board_badges_select_own`: `(select auth.uid()) = user_id`
+  (향후 table SELECT grant를 열 때 적용; backend API는 service_role으로 RLS 우회).
+- soft-delete 전용 repo이므로 ON DELETE CASCADE는 안전망 전용 (CORR-9).
+
+### user_badges *(0006)*
+
+| 컬럼 | 타입 | NULL | 비고 |
+|---|---|---|---|
+| user_id | uuid | NO | FK→auth.users ON DELETE CASCADE |
+| badge_id | text | NO | FK→mission_badges ON DELETE RESTRICT |
+| first_board_id | uuid | YES | FK→boards ON DELETE SET NULL |
+| last_board_id | uuid | YES | FK→boards ON DELETE SET NULL |
+| first_earned_at | timestamptz | NO | now() default |
+| last_earned_at | timestamptz | NO | now() default |
+| earned_count | integer | NO | 1 default, CHECK ≥ 1 |
+
+- PK `(user_id, badge_id)`.
+- INDEX `user_badges_badge_idx (badge_id)` *(0007)*.
+- INDEX `user_badges_first_board_idx (first_board_id)` *(0007)*.
+- INDEX `user_badges_last_board_idx (last_board_id)` *(0007)*.
+- Table privileges: `service_role` read/write only. `public`/`anon`/`authenticated` revoked.
+- RLS enabled. `user_badges_select_own`: `(select auth.uid()) = user_id`
+  (향후 table SELECT grant를 열 때 적용; backend API는 service_role으로 RLS 우회).
+- board soft-delete는 earned_count를 감소시키지 않는다 (badge = 영구 achievement, CORR-9).
+
+### RPC award_board_badges *(0006)*
+
+```sql
+public.award_board_badges(p_user_id uuid, p_board_id uuid, p_badge_ids text[])
+returns table (badge_id text, is_first_earn boolean)
+```
+
+- `security definer set search_path to 'public'`.
+- service_role 전용(`auth.role() <> 'service_role'` → raise 42501).
+- 원자적 CTE: `board_badges` insert (on-conflict-do-nothing) → `user_badges` upsert (earned_count +1).
+- `on conflict`는 `board_badges_pkey`, `user_badges_pkey` constraint target을 명시한다(0008).
+- 동일 board 재호출은 board_badges에서 conflict → user_badges rollup 미발생 → earned_count 불변 (idempotent self-heal).
+- `revoke all from public/anon/authenticated; grant execute to service_role`.
 
 ### photos / clips
 

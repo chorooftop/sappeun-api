@@ -263,6 +263,29 @@ export const replaceBoardCellSchema = z.object({
   cellId: z.string().min(1).max(80),
 })
 
+export const endBoardSchema = z.object({
+  title: z.string().trim().min(1).max(24).optional(),
+})
+
+export const updateBoardTitleSchema = z.object({
+  title: z.string().trim().min(1).max(24),
+})
+
+export const editBoardCellMissionSchema = z.object({
+  cellId: z.string().min(1).max(80),
+  title: z.string().trim().min(1).max(40),
+  description: z.string().trim().max(160).optional(),
+  captureLabel: z.string().trim().max(40).optional(),
+})
+
+export const restoreBoardCellMissionSchema = z.object({
+  cellId: z.string().min(1).max(80),
+})
+
 export type BoardSnapshotInput = z.infer<typeof boardSnapshotSchema>
 export type BoardSessionInput = z.infer<typeof boardSessionSchema>
 export type BoardListQueryInput = z.infer<typeof boardListQuerySchema>
+export type EndBoardInput = z.infer<typeof endBoardSchema>
+export type UpdateBoardTitleInput = z.infer<typeof updateBoardTitleSchema>
+export type EditBoardCellMissionInput = z.infer<typeof editBoardCellMissionSchema>
+export type RestoreBoardCellMissionInput = z.infer<typeof restoreBoardCellMissionSchema>

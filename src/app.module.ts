@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 
 import { AuthModule } from '@/auth/auth.module'
+import { BadgesModule } from '@/badges/badges.module'
 import { BoardsModule } from '@/boards/boards.module'
 import { validateEnv } from '@/config/env'
 import { HealthModule } from '@/health/health.module'
@@ -24,6 +25,7 @@ import { UsersModule } from '@/users/users.module'
     HealthModule,
     UsersModule,
     BoardsModule,
+    BadgesModule,
     MediaModule,
     SharesModule,
     JobsModule,

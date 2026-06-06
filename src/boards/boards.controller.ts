@@ -23,10 +23,18 @@ import { BoardsService } from '@/boards/boards.service'
 import {
   boardListQuerySchema,
   boardSessionSchema,
+  editBoardCellMissionSchema,
+  endBoardSchema,
   markBoardCellSchema,
   replaceBoardCellSchema,
+  restoreBoardCellMissionSchema,
+  updateBoardTitleSchema,
   type BoardListQueryInput,
   type BoardSessionInput,
+  type EditBoardCellMissionInput,
+  type EndBoardInput,
+  type RestoreBoardCellMissionInput,
+  type UpdateBoardTitleInput,
 } from '@/boards/boards.schemas'
 import { ZodValidationPipe } from '@/common/pipes/zod-validation.pipe'
 
@@ -131,11 +139,63 @@ export class BoardsController {
 
   @Post(':boardId/end')
   @UseGuards(SupabaseAuthGuard)
-  async end(@CurrentUser() user: User, @Param('boardId') boardId: string) {
+  async end(
+    @CurrentUser() user: User,
+    @Param('boardId') boardId: string,
+    @Body(new ZodValidationPipe(endBoardSchema)) body: EndBoardInput,
+  ) {
     return {
       ok: true,
-      board: await this.boardsService.endUserBoard(user.id, boardId),
+      board: await this.boardsService.endUserBoard(user.id, boardId, body),
     }
+  }
+
+  @Patch(':boardId/title')
+  @UseGuards(SupabaseAuthGuard)
+  async updateTitle(
+    @CurrentUser() user: User,
+    @Param('boardId') boardId: string,
+    @Body(new ZodValidationPipe(updateBoardTitleSchema))
+    input: UpdateBoardTitleInput,
+  ) {
+    return {
+      ok: true,
+      board: await this.boardsService.updateBoardTitle(user.id, boardId, input),
+    }
+  }
+
+  @Patch(':boardId/cells/:position/mission')
+  @UseGuards(SupabaseAuthGuard)
+  async editCellMission(
+    @CurrentUser() user: User,
+    @Param('boardId') boardId: string,
+    @Param('position', ParseIntPipe) position: number,
+    @Body(new ZodValidationPipe(editBoardCellMissionSchema))
+    input: EditBoardCellMissionInput,
+  ) {
+    return this.boardsService.editBoardCellMission(
+      user.id,
+      boardId,
+      assertBoardPosition(position),
+      input,
+    )
+  }
+
+  @Post(':boardId/cells/:position/mission/restore')
+  @UseGuards(SupabaseAuthGuard)
+  async restoreCellMission(
+    @CurrentUser() user: User,
+    @Param('boardId') boardId: string,
+    @Param('position', ParseIntPipe) position: number,
+    @Body(new ZodValidationPipe(restoreBoardCellMissionSchema))
+    input: RestoreBoardCellMissionInput,
+  ) {
+    return this.boardsService.restoreBoardCellMission(
+      user.id,
+      boardId,
+      assertBoardPosition(position),
+      input,
+    )
   }
 
   @Patch(':boardId/cells/:position')
