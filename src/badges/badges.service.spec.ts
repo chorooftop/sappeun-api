@@ -12,10 +12,15 @@ type QueryResult = {
   error: Error | null
 }
 
-function makeQuery(result: QueryResult) {
+type EqCall = { column: string; value: unknown }
+
+function makeQuery(result: QueryResult, onEq?: (call: EqCall) => void) {
   const query: Record<string, unknown> = {
     select: () => query,
-    eq: () => query,
+    eq: (column: string, value: unknown) => {
+      onEq?.({ column, value })
+      return query
+    },
     in: () => query,
     is: () => query,
     not: () => query,
@@ -33,12 +38,16 @@ function makeQuery(result: QueryResult) {
 function makeAdmin(
   queues: Record<string, QueryResult[]>,
   rpc?: { result: QueryResult; calls: unknown[] },
+  eqCalls?: Record<string, EqCall[]>,
 ) {
   return {
     from(table: string) {
       const next = queues[table]?.shift()
       if (!next) throw new Error(`Unexpected table query: ${table}`)
-      return makeQuery(next)
+      return makeQuery(next, (call) => {
+        if (!eqCalls) return
+        ;(eqCalls[table] ??= []).push(call)
+      })
     },
     rpc(name: string, args: unknown) {
       rpc?.calls.push({ name, args })
@@ -203,6 +212,26 @@ describe('BadgesService.listCatalog', () => {
       }),
     ])
   })
+
+  it('scopes the catalog query to the active catalog version', async () => {
+    const eqCalls: Record<string, EqCall[]> = {}
+    const admin = makeAdmin(
+      { mission_badges: [{ data: [catalogRow()], error: null }] },
+      undefined,
+      eqCalls,
+    )
+
+    await makeService(admin).listCatalog()
+
+    expect(eqCalls.mission_badges).toContainEqual({
+      column: 'catalog_version',
+      value: 'api-migration-v1',
+    })
+    expect(eqCalls.mission_badges).toContainEqual({
+      column: 'active',
+      value: true,
+    })
+  })
 })
 
 describe('BadgesService.listUserBadges', () => {
@@ -317,7 +346,10 @@ describe('BadgesService.getUserBadgeDetail', () => {
           data: userBadgeRow({
             badge_id: 'mission:n01:v1',
             earned_count: 2,
-            first_board_id: 'board-1',
+            first_board_id: 'board-first',
+            last_board_id: 'board-last',
+            first_earned_at: '2026-06-01T00:00:00.000Z',
+            last_earned_at: '2026-06-03T00:00:00.000Z',
           }),
           error: null,
         },
@@ -334,7 +366,10 @@ describe('BadgesService.getUserBadgeDetail', () => {
         badgeId: 'mission:n01:v1',
         earned: true,
         earnedCount: 2,
-        sourceBoardId: 'board-1',
+        firstEarnedAt: '2026-06-01T00:00:00.000Z',
+        lastEarnedAt: '2026-06-03T00:00:00.000Z',
+        // sourceBoardId is unified with the list endpoint: most recent board.
+        sourceBoardId: 'board-last',
       }),
     )
   })

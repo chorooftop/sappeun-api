@@ -104,6 +104,7 @@ export class BadgesService {
       .select(
         'id, mission_id, catalog_version, title, category, difficulty, grade_label, grade_color, artwork_key, sort_order, active',
       )
+      .eq('catalog_version', MISSION_CATALOG_VERSION)
       .eq('active', true)
       .order('sort_order', { ascending: true })
 
@@ -118,6 +119,7 @@ export class BadgesService {
       .select(
         'id, mission_id, catalog_version, title, category, difficulty, grade_label, grade_color, artwork_key, sort_order, active',
       )
+      .eq('catalog_version', MISSION_CATALOG_VERSION)
       .eq('active', true)
       .order('sort_order', { ascending: true })
 
@@ -202,6 +204,7 @@ export class BadgesService {
         'id, mission_id, catalog_version, title, category, difficulty, grade_label, grade_color, artwork_key, sort_order, active',
       )
       .eq('id', badgeId)
+      .eq('catalog_version', MISSION_CATALOG_VERSION)
       .eq('active', true)
       .maybeSingle()
 
@@ -233,7 +236,11 @@ export class BadgesService {
       earned: Boolean(userBadge),
       earnedCount: userBadge?.earned_count ?? 0,
       firstEarnedAt: userBadge?.first_earned_at ?? null,
-      sourceBoardId: userBadge?.first_board_id ?? null,
+      lastEarnedAt: userBadge?.last_earned_at ?? null,
+      // sourceBoardId follows the list endpoint: the most recent board that
+      // earned the badge (last_board_id), so list and detail deep-link to the
+      // same board for a given badge.
+      sourceBoardId: userBadge?.last_board_id ?? null,
     }
   }
 
@@ -328,9 +335,7 @@ export class BadgesService {
 
         return {
           badgeId: result.badge_id,
-          missionId:
-            catalogRows.find((r) => r.id === result.badge_id)?.mission_id ??
-            result.badge_id,
+          missionId: catalog.mission_id,
           title: catalog.title,
           difficulty: catalog.difficulty,
           gradeColor: catalog.grade_color,
@@ -366,6 +371,10 @@ export class BadgesService {
 
     const uniqueBadgeIds = [...new Set(boardBadgeRows.map((row) => row.badge_id))]
 
+    // Earned badges are a permanent achievement record: look them up by id only,
+    // intentionally ignoring active/catalog_version so a historically-earned
+    // badge still renders even if its catalog row is later deactivated or
+    // superseded by a new catalog version. Do not add an active/version filter.
     const { data: catalogData, error: catalogError } = await this.admin
       .from('mission_badges')
       .select(

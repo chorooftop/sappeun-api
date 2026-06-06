@@ -344,6 +344,19 @@ order by table_name, grantee;
 - Catalog drift: sheet.json mission이 늘면 seed가 누락될 수 있다. seed coverage 테스트(`badges.service.spec.ts`)가 로컬에서 이를 잡지만 CI에서는 sibling repo 부재 시 skip될 수 있다.
 - CLI/Docker 환경: 로컬 적용은 Docker와 Supabase CLI가 필요하다. 미가용 시 원격 직접 적용 또는 Dashboard SQL editor 수동 실행이 가능하지만, migration 이력과 어긋날 수 있어 권장하지 않는다.
 
+## 애플리케이션 배포 검증 (404 근본 원인)
+
+이 문서는 DB/Supabase 적용만 다루지만, 뱃지도감 `GET /v1/badges/catalog` 404의 **실제 근본 원인은 DB가 아니라 API 애플리케이션 미배포**다. DB 마이그레이션이 원격에 적용돼 있어도, `BadgesModule`을 포함한 API 빌드가 `/v1`을 서빙하는 환경에 배포되지 않으면 라우트 자체가 매핑되지 않아 404가 난다. DB 적용만 보고 "완료"로 판단하면 404가 그대로 남으므로, 아래 앱 배포 검증을 반드시 별도로 수행한다.
+
+- 코드 위치: `BadgesModule`·controller·service·migration 0006~0008은 브랜치 `feat/bingo-editable-badges`(커밋 `3c9621f`)에 있으며, 배포 대상 브랜치(`main`)에 머지되어야 한다.
+- 배포 검증 절차:
+  1. `git log origin/main..HEAD`로 badges 커밋이 `main`에 머지·배포됐는지 확인. 미반영이면 머지 + 재배포.
+  2. 배포 환경의 `API_PREFIX`가 `v1`인지 확인(다르면 프런트 `/v1/...` 호출과 어긋나 404).
+  3. 배포된 서버에서 유효 토큰으로 `GET /v1/badges/catalog` → `200` + `{ "badges": [...47] }` 확인(시드 기준 비어있지 않음).
+  4. `GET /v1/users/me/badges` → `200` + `{ summary, badges }` 구조 확인.
+  5. 토큰 없이 호출 시 `401`(404 아님) 확인 — 가드가 라우트 부재로 새지 않는지 검증.
+- empty-data 계약: 시드가 없거나 비어 있어도 `mission_badges` 테이블이 존재하면 `listCatalog`는 `200` + 빈 배열을 반환한다(404/500 아님). 테이블 자체가 없으면 500이 나므로 마이그레이션 적용이 선행돼야 한다.
+
 ## 체크리스트 (요약)
 
 - [ ] Supabase CLI 설치 + `link --project-ref wtptvgxyqkqqsfkdsoox`
@@ -357,6 +370,9 @@ order by table_name, grantee;
 - [ ] Advisors 기준선 대비 신규 경고 확인
 - [ ] official board close smoke + 멱등성 실DB 확인
 - [ ] `SCHEMA_SNAPSHOT.md` 일치 확인
+- [ ] **앱 배포**: badges 커밋(`3c9621f`)이 `main`에 머지·재배포됨
+- [ ] **앱 배포**: 배포 환경 `API_PREFIX == v1` 확인
+- [ ] **앱 배포**: 배포 서버에서 `GET /v1/badges/catalog` 200 + 비어있지 않은 목록, `GET /v1/users/me/badges` 200, 무토큰 401 확인
 
 ## 완료 기준
 
