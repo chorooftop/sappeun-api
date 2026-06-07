@@ -23,6 +23,11 @@ describe('missionContentResponseSchema', () => {
           hint: '길가에서 꽃을 찾아요',
           icon: 'flower-2',
           variant: 'QeQCU',
+          artwork: {
+            schemaVersion: 1,
+            type: 'lucide',
+            key: 'flower-2',
+          },
         },
         {
           id: 'c01',
@@ -51,8 +56,9 @@ describe('missionContentResponseSchema', () => {
       variant: 'QeQCU',
     }
 
-    expect(() => missionContentResponseSchema.shape.cells.element.parse(base))
-      .not.toThrow()
+    expect(() =>
+      missionContentResponseSchema.shape.cells.element.parse(base),
+    ).not.toThrow()
 
     const withoutIcon: Record<string, unknown> = { ...base }
     delete withoutIcon.icon

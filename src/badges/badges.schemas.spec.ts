@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  badgeCatalogItemSchema,
   badgeDifficultyFilterSchema,
   badgeStatusFilterSchema,
   userBadgesQuerySchema,
@@ -65,9 +66,9 @@ describe('userBadgesQuerySchema', () => {
   })
 
   it('rejects an invalid status value', () => {
-    expect(
-      userBadgesQuerySchema.safeParse({ status: 'unknown' }).success,
-    ).toBe(false)
+    expect(userBadgesQuerySchema.safeParse({ status: 'unknown' }).success).toBe(
+      false,
+    )
   })
 
   it('rejects both invalid difficulty and status', () => {
@@ -77,5 +78,30 @@ describe('userBadgesQuerySchema', () => {
         status: 'pending',
       }).success,
     ).toBe(false)
+  })
+})
+
+describe('badgeCatalogItemSchema', () => {
+  it('accepts additive runtime artwork while preserving legacy artworkKey', () => {
+    const parsed = badgeCatalogItemSchema.parse({
+      badgeId: 'mission:n01:v1',
+      missionId: 'n01',
+      catalogVersion: 'api-migration-v1',
+      title: '꽃',
+      category: 'nature',
+      difficulty: 'easy',
+      gradeLabel: '일상 배지',
+      gradeColor: '#6ED6A0',
+      artworkKey: 'mission/n01',
+      artwork: {
+        schemaVersion: 1,
+        type: 'lucide',
+        key: 'flower-2',
+      },
+      sortOrder: 10,
+    })
+
+    expect(parsed.artwork).toMatchObject({ type: 'lucide', key: 'flower-2' })
+    expect(parsed.artworkKey).toBe('mission/n01')
   })
 })

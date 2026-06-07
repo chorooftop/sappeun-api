@@ -1,5 +1,12 @@
 import { Injectable } from '@nestjs/common'
 
+import { artworkSpecSchema } from '@/common/artwork.schemas'
+import {
+  isVisibleToClient,
+  LEGACY_CLIENT_CAPABILITIES,
+  type ClientCapabilities,
+  type CapabilityGatedRow,
+} from '@/common/client-capabilities'
 import {
   missionContentResponseSchema,
   type MissionCategory,
@@ -14,11 +21,11 @@ import {
 import { SupabaseService } from '@/supabase/supabase.service'
 
 const MISSION_CONTENT_SELECT =
-  'mission_id, label, category, hint, caption, capture_label, icon, variant, difficulty, camera, text_only, font_size, swatch, swatch_label, no_photo, fixed_position, sort_order'
+  'mission_id, label, category, hint, caption, capture_label, icon, variant, difficulty, camera, text_only, font_size, swatch, swatch_label, no_photo, fixed_position, artwork, min_app_build, required_capabilities, active_from, active_until, sort_order'
 
 const MISSION_CATEGORY_SELECT = 'key, label, tone, count'
 
-interface MissionContentRow {
+interface MissionContentRow extends CapabilityGatedRow {
   mission_id: string
   label: string
   category: string
@@ -35,6 +42,7 @@ interface MissionContentRow {
   swatch_label: string | null
   no_photo: boolean | null
   fixed_position: string | null
+  artwork: unknown
   sort_order: number | null
 }
 
@@ -46,6 +54,9 @@ interface MissionCategoryRow {
 }
 
 function toMissionCell(row: MissionContentRow): MissionCell {
+  const artwork =
+    row.artwork != null ? artworkSpecSchema.parse(row.artwork) : undefined
+
   return {
     id: row.mission_id,
     category: row.category,
@@ -65,6 +76,7 @@ function toMissionCell(row: MissionContentRow): MissionCell {
     ...(row.fixed_position != null
       ? { fixedPosition: row.fixed_position }
       : {}),
+    ...(artwork ? { artwork } : {}),
   }
 }
 
@@ -74,6 +86,13 @@ function toMissionCategory(row: MissionCategoryRow): MissionCategory {
     count: row.count ?? 0,
     tone: row.tone ?? '',
   }
+}
+
+function countVisibleCellsByCategory(cells: readonly MissionCell[]) {
+  return cells.reduce<Record<string, number>>((acc, cell) => {
+    acc[cell.category] = (acc[cell.category] ?? 0) + 1
+    return acc
+  }, {})
 }
 
 @Injectable()
@@ -86,6 +105,7 @@ export class MissionsService {
 
   async getMissionContent(
     catalogVersion: string = MISSION_CATALOG_VERSION,
+    client: ClientCapabilities = LEGACY_CLIENT_CAPABILITIES,
   ): Promise<MissionContentResponse> {
     const { data: cellData, error: cellError } = await this.admin
       .from('mission_content')
@@ -103,11 +123,18 @@ export class MissionsService {
 
     if (categoryError) throw categoryError
 
-    const cells = ((cellData ?? []) as MissionContentRow[]).map(toMissionCell)
+    const cells = ((cellData ?? []) as MissionContentRow[])
+      .filter((row) => isVisibleToClient(row, client))
+      .map(toMissionCell)
+    const visibleCounts = countVisibleCellsByCategory(cells)
     const categories = ((categoryData ?? []) as MissionCategoryRow[]).reduce<
       Record<string, MissionCategory>
     >((acc, row) => {
-      acc[row.key] = toMissionCategory(row)
+      const category = toMissionCategory(row)
+      acc[row.key] = {
+        ...category,
+        count: visibleCounts[row.key] ?? 0,
+      }
       return acc
     }, {})
 

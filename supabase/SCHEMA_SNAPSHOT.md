@@ -1,12 +1,12 @@
 # Supabase 스키마 스냅샷 (Phase 0 진단 결과)
 
 ```
-조사일:   2026-05-31 KST (0001 기준) / 0006 추가: 2026-06-05
+조사일:   2026-05-31 KST (0001 기준) / 0006 추가: 2026-06-05 / 0013 추가: 2026-06-08
 방법:     PostgREST OpenAPI + 직접 SQL 진단(psql, ap-south-1 풀러)
 프로젝트:  wtptvgxyqkqqsfkdsoox (리전: ap-south-1)
 정식 덤프: supabase/migrations/0001_remote_baseline.sql (초기화 기준 schema-only baseline, 1150줄)
 진단 도구: scripts/introspect-schema.mjs(REST), scripts/introspect.sql(psql)
-최신 migration: 0009_mission_difficulty_sync.sql
+최신 migration: 0013_client_capability_gate.sql
 ```
 
 > **Phase 0 완료.** 컬럼·타입·RLS·FK·CHECK·트리거까지 전부 실측 확정.
@@ -30,13 +30,27 @@
 > 맞춰 `mission_badges`를 in-place UPDATE한다. medium 8개(n06/m03/m04/m09/a06/t05/c07/c08),
 > hard 3개(n08/a04/t06). catalog_version은 `api-migration-v1` 유지 → 기존 user_badges는
 > join으로 자동 보정. 운영 미가동(line 13) 상태라 backfill/재발급 불필요.
+>
+> **0010/0011 추가 (2026-06-08).** `mission_content`, `mission_categories`를 DB-as-source
+> 미션 콘텐츠 테이블로 추가하고 `mission_badges(catalog_version, mission_id)`가
+> `mission_content`를 FK로 참조하게 한다.
+>
+> **0012 추가 (2026-06-08).** `mission_content.artwork`, `mission_badges.artwork` JSONB 컬럼을
+> 추가한다. 기존 48개 `mission_content` 행은 legacy `icon`/`swatch`/`text_only` 기준으로
+> ArtworkSpec v1을 백필한다. `mission_badges.artwork`는 배지 전용 override가 있을 때만 채우며,
+> API는 `mission_badges.artwork ?? mission_content.artwork` 순서로 반환한다.
+>
+> **0013 추가 (2026-06-08).** `mission_content`, `mission_badges`에 capability gate 컬럼
+> (`min_app_build`, `required_capabilities`, `active_from`, `active_until`)을 추가한다. API는
+> `X-Sappeun-App-Build`, `X-Sappeun-Client-Capabilities` 헤더를 파싱해 legacy client에는
+> gated row를 숨긴다.
 
 ---
 
 ## public 스키마 객체
 
 테이블: `board_cells, boards, clips, guest_clip_uploads, guest_photo_uploads,
-photos, profiles, shares, user_consents,
+photos, profiles, shares, user_consents, mission_content, mission_categories,
 mission_badges, board_badges, user_badges` *(0006 추가)*
 뷰: `shared_board_view`
 함수: `require_current_consents_for_signup()`, `set_updated_at()`,
@@ -90,15 +104,45 @@ mission_badges, board_badges, user_badges` *(0006 추가)*
 | grade_label | text | NO | easy→'일상 배지', medium→'도전 배지' |
 | grade_color | text | NO | easy→'#6ED6A0', medium→'#F5A623' |
 | artwork_key | text | YES | 예: `mission/n01` |
+| artwork | jsonb | YES | ArtworkSpec v1 override. NULL이면 `mission_content.artwork` fallback *(0012)* |
+| min_app_build | integer | YES | row 노출 최소 `X-Sappeun-App-Build` *(0013)* |
+| required_capabilities | text[] | NO | default `{}`. row 노출에 필요한 client capabilities *(0013)* |
+| active_from | timestamptz | YES | 예약 공개 시작 시각 *(0013)* |
+| active_until | timestamptz | YES | 예약 공개 종료 시각(exclusive) *(0013)* |
 | sort_order | integer | NO | 0 default, 10 단위 증가 |
 | active | boolean | NO | true default |
 | created_at | timestamptz | NO | now() |
 
 - UNIQUE `(catalog_version, mission_id)`.
+- `artwork`는 배지 전용 override만 저장한다. 일반 배지는 `mission_content.artwork`를 사용한다.
 - Table privileges: `service_role` read/write only. `public`/`anon`/`authenticated` revoked.
 - RLS enabled. `mission_badges_select_active`: `active = true` 인 행만 authenticated 조회
   (향후 table SELECT grant를 열 때 적용; backend API는 service_role으로 RLS 우회).
 - 47개 시드 (`api-migration-v1`, sheet.json v1.3.0). 제외: `id='free'` (category='special', 중앙 free 슬롯).
+
+### mission_content / mission_categories *(0010, 0012, 0013)*
+
+| 컬럼 | 타입 | NULL | 비고 |
+|---|---|---|---|
+| mission_id | text | NO | sheet.json cell id. PK part |
+| catalog_version | text | NO | 현재: `api-migration-v1`. PK part |
+| label/category/hint/caption/capture_label | text | mixed | mission copy/cue content |
+| icon | text | YES | legacy lucide cue key |
+| variant | text | NO | CHECK ∈ {QeQCU, k4Srv, rAdyJ} |
+| difficulty | text | YES | CHECK ∈ {easy, medium, hard} |
+| camera/text_only/font_size/swatch/swatch_label/no_photo/fixed_position | mixed | YES | legacy renderer fields |
+| artwork | jsonb | YES | ArtworkSpec v1. 기존 48개 active row는 0012에서 백필됨 |
+| min_app_build | integer | YES | row 노출 최소 `X-Sappeun-App-Build` |
+| required_capabilities | text[] | NO | default `{}`. 예: `runtime-artwork-v1`, `swatch-hex-v1` |
+| active_from | timestamptz | YES | 예약 공개 시작 시각 |
+| active_until | timestamptz | YES | 예약 공개 종료 시각(exclusive) |
+| sort_order | integer | NO | source order * 10 |
+| active | boolean | NO | true default |
+
+- `mission_content.artwork`가 미션 기본 시각 core의 정본이다.
+- active row는 API service-role query 후 client capability/window 필터를 거쳐 반환된다.
+- Verification query: `select count(*) from public.mission_content where active = true and artwork is null;`
+  expected `0` after 0012 backfill.
 
 ### board_badges *(0006)*
 

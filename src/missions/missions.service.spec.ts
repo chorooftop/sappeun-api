@@ -52,6 +52,11 @@ function contentRow(overrides: Record<string, unknown> = {}) {
     swatch_label: null,
     no_photo: null,
     fixed_position: null,
+    artwork: null,
+    min_app_build: null,
+    required_capabilities: [],
+    active_from: null,
+    active_until: null,
     sort_order: 0,
     ...overrides,
   }
@@ -100,7 +105,12 @@ describe('MissionsService.getMissionContent', () => {
               tone: 'brand-primary',
               count: 8,
             },
-            { key: 'time', label: '시간·숫자', tone: 'brand-primary', count: 6 },
+            {
+              key: 'time',
+              label: '시간·숫자',
+              tone: 'brand-primary',
+              count: 6,
+            },
             { key: 'color', label: '색깔', tone: 'cat-color', count: 8 },
           ],
           error: null,
@@ -143,23 +153,88 @@ describe('MissionsService.getMissionContent', () => {
     })
 
     expect(result.categories).toEqual({
-      nature: { label: '자연·식물', count: 8, tone: 'brand-primary' },
-      time: { label: '시간·숫자', count: 6, tone: 'brand-primary' },
-      color: { label: '색깔', count: 8, tone: 'cat-color' },
+      nature: { label: '자연·식물', count: 1, tone: 'brand-primary' },
+      time: { label: '시간·숫자', count: 1, tone: 'brand-primary' },
+      color: { label: '색깔', count: 1, tone: 'cat-color' },
     })
   })
 
   it('preserves a null icon as null rather than dropping the key', async () => {
     const admin = makeAdmin({
-      mission_content: [
-        { data: [contentRow({ icon: null })], error: null },
-      ],
+      mission_content: [{ data: [contentRow({ icon: null })], error: null }],
       mission_categories: [{ data: [], error: null }],
     })
 
     const result = await makeService(admin).getMissionContent()
 
     expect(result.cells[0]).toHaveProperty('icon', null)
+  })
+
+  it('adds runtime artwork when the DB row provides a valid spec', async () => {
+    const admin = makeAdmin({
+      mission_content: [
+        {
+          data: [
+            contentRow({
+              artwork: {
+                schemaVersion: 1,
+                type: 'lucide',
+                key: 'flower-2',
+                paletteMode: 'mono',
+              },
+            }),
+          ],
+          error: null,
+        },
+      ],
+      mission_categories: [{ data: [], error: null }],
+    })
+
+    const result = await makeService(admin).getMissionContent()
+
+    expect(result.cells[0]).toMatchObject({
+      id: 'n01',
+      artwork: {
+        schemaVersion: 1,
+        type: 'lucide',
+        key: 'flower-2',
+        paletteMode: 'mono',
+      },
+    })
+  })
+
+  it('filters gated rows unless the client advertises the required capabilities', async () => {
+    const rows = [
+      contentRow({ mission_id: 'n01', sort_order: 0 }),
+      contentRow({
+        mission_id: 'new-remote',
+        sort_order: 10,
+        required_capabilities: ['runtime-artwork-v1'],
+        min_app_build: 202606080001,
+      }),
+    ]
+
+    const legacyAdmin = makeAdmin({
+      mission_content: [{ data: rows, error: null }],
+      mission_categories: [{ data: [], error: null }],
+    })
+    const legacy = await makeService(legacyAdmin).getMissionContent()
+    expect(legacy.cells.map((cell) => cell.id)).toEqual(['n01'])
+    expect(legacy.categories).toEqual({})
+
+    const runtimeAdmin = makeAdmin({
+      mission_content: [{ data: rows, error: null }],
+      mission_categories: [{ data: [], error: null }],
+    })
+    const runtime = await makeService(runtimeAdmin).getMissionContent(
+      undefined,
+      {
+        appBuild: 202606080001,
+        capabilities: new Set(['runtime-artwork-v1']),
+      },
+    )
+
+    expect(runtime.cells.map((cell) => cell.id)).toEqual(['n01', 'new-remote'])
   })
 
   it('returns an empty payload when there is no content', async () => {

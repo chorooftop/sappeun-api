@@ -78,7 +78,7 @@ function makeService(admin: ReturnType<typeof makeAdmin>): BadgesService {
 
 function expectMissionBadgeSelectUsesContentJoin(select: string) {
   expect(select).toContain(
-    'mission_content!mission_badges_mission_content_fkey(label, category, difficulty)',
+    'mission_content!mission_badges_mission_content_fkey(label, category, difficulty, artwork, active, min_app_build, required_capabilities, active_from, active_until)',
   )
 
   const withoutContentJoin = select.replace(
@@ -99,8 +99,15 @@ function catalogRow(
     grade_label: string
     grade_color: string
     artwork_key: string | null
+    artwork: unknown
+    content_artwork: unknown
     sort_order: number
     active: boolean
+    content_active: boolean
+    min_app_build: number | null
+    required_capabilities: string[]
+    active_from: string | null
+    active_until: string | null
   }> = {},
 ) {
   return {
@@ -110,12 +117,23 @@ function catalogRow(
     grade_label: overrides.grade_label ?? '일상 배지',
     grade_color: overrides.grade_color ?? '#6ED6A0',
     artwork_key: overrides.artwork_key ?? 'mission/n01',
+    artwork: overrides.artwork ?? null,
     sort_order: overrides.sort_order ?? 10,
     active: overrides.active ?? true,
+    min_app_build: overrides.min_app_build ?? null,
+    required_capabilities: overrides.required_capabilities ?? [],
+    active_from: overrides.active_from ?? null,
+    active_until: overrides.active_until ?? null,
     mission_content: {
       label: overrides.title ?? '꽃',
       category: overrides.category ?? 'nature',
       difficulty: overrides.difficulty ?? 'easy',
+      artwork: overrides.content_artwork ?? null,
+      active: overrides.content_active ?? true,
+      min_app_build: overrides.min_app_build ?? null,
+      required_capabilities: overrides.required_capabilities ?? [],
+      active_from: overrides.active_from ?? null,
+      active_until: overrides.active_until ?? null,
     },
   }
 }
@@ -238,6 +256,93 @@ describe('BadgesService.listCatalog', () => {
         difficulty: 'medium',
         gradeColor: '#F5A623',
       }),
+    ])
+  })
+
+  it('uses badge artwork override before mission content artwork fallback', async () => {
+    const fallbackArtwork = {
+      schemaVersion: 1,
+      type: 'lucide',
+      key: 'flower-2',
+    }
+    const overrideArtwork = {
+      schemaVersion: 1,
+      type: 'text',
+      label: '꽃',
+      fontSize: 24,
+    }
+    const admin = makeAdmin({
+      mission_badges: [
+        {
+          data: [
+            catalogRow({
+              id: 'mission:n01:v1',
+              artwork: null,
+              content_artwork: fallbackArtwork,
+            }),
+            catalogRow({
+              id: 'mission:n02:v1',
+              mission_id: 'n02',
+              artwork: overrideArtwork,
+              content_artwork: fallbackArtwork,
+            }),
+          ],
+          error: null,
+        },
+      ],
+    })
+
+    const result = await makeService(admin).listCatalog()
+
+    expect(result[0]).toMatchObject({ artwork: fallbackArtwork })
+    expect(result[1]).toMatchObject({ artwork: overrideArtwork })
+  })
+
+  it('filters gated catalog rows for legacy clients', async () => {
+    const admin = makeAdmin({
+      mission_badges: [
+        {
+          data: [
+            catalogRow({ id: 'mission:n01:v1', mission_id: 'n01' }),
+            catalogRow({
+              id: 'mission:new:v1',
+              mission_id: 'new',
+              required_capabilities: ['runtime-artwork-v1'],
+              min_app_build: 202606080001,
+            }),
+          ],
+          error: null,
+        },
+      ],
+    })
+
+    const legacy = await makeService(admin).listCatalog()
+    expect(legacy.map((badge) => badge.badgeId)).toEqual(['mission:n01:v1'])
+
+    const runtimeAdmin = makeAdmin({
+      mission_badges: [
+        {
+          data: [
+            catalogRow({ id: 'mission:n01:v1', mission_id: 'n01' }),
+            catalogRow({
+              id: 'mission:new:v1',
+              mission_id: 'new',
+              required_capabilities: ['runtime-artwork-v1'],
+              min_app_build: 202606080001,
+            }),
+          ],
+          error: null,
+        },
+      ],
+    })
+
+    const runtime = await makeService(runtimeAdmin).listCatalog({
+      appBuild: 202606080001,
+      capabilities: new Set(['runtime-artwork-v1']),
+    })
+    expect(runtime.map((badge) => badge.badgeId)).toEqual([
+      'mission:n01:v1',
+      'mission:new:v1',
     ])
   })
 

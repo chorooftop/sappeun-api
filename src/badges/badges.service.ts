@@ -1,30 +1,40 @@
 import { Injectable } from '@nestjs/common'
 
+import { artworkSpecSchema, type ArtworkSpec } from '@/common/artwork.schemas'
+import {
+  isVisibleToClient,
+  LEGACY_CLIENT_CAPABILITIES,
+  type ClientCapabilities,
+  type CapabilityGatedRow,
+} from '@/common/client-capabilities'
 import type { UserBadgesQueryInput } from '@/badges/badges.schemas'
 import { MISSION_CATALOG_VERSION } from '@/missions/missions.constants'
 import { SupabaseService } from '@/supabase/supabase.service'
 import type { BoardCellRow, BoardRow } from '@/boards/boards.service'
 
 const MISSION_BADGE_CONTENT_JOIN =
-  'mission_content!mission_badges_mission_content_fkey(label, category, difficulty)'
+  'mission_content!mission_badges_mission_content_fkey(label, category, difficulty, artwork, active, min_app_build, required_capabilities, active_from, active_until)'
 
-const MISSION_BADGE_CATALOG_SELECT = `id, mission_id, catalog_version, grade_label, grade_color, artwork_key, sort_order, active, ${MISSION_BADGE_CONTENT_JOIN}`
+const MISSION_BADGE_CATALOG_SELECT = `id, mission_id, catalog_version, grade_label, grade_color, artwork_key, artwork, sort_order, active, min_app_build, required_capabilities, active_from, active_until, ${MISSION_BADGE_CONTENT_JOIN}`
 
 const MISSION_BADGE_AWARD_SELECT = `id, mission_id, catalog_version, grade_color, grade_label, active, ${MISSION_BADGE_CONTENT_JOIN}`
 
-interface MissionBadgeContentRow {
+interface MissionBadgeContentRow extends CapabilityGatedRow {
   label: string
   category: string
   difficulty: string | null
+  artwork: unknown
+  active: boolean | null
 }
 
-interface MissionBadgeRow {
+interface MissionBadgeRow extends CapabilityGatedRow {
   id: string
   mission_id: string
   catalog_version: string
   grade_label: string
   grade_color: string
   artwork_key: string | null
+  artwork: unknown
   sort_order: number
   active: boolean
   mission_content: MissionBadgeContentRow | MissionBadgeContentRow[] | null
@@ -77,6 +87,7 @@ export interface AwardBoardBadgesResult {
 
 function mapCatalogRow(row: MissionBadgeRow) {
   const content = missionContentFor(row)
+  const artwork = artworkFor(row, content)
   return {
     badgeId: row.id,
     missionId: row.mission_id,
@@ -87,6 +98,7 @@ function mapCatalogRow(row: MissionBadgeRow) {
     gradeLabel: row.grade_label,
     gradeColor: row.grade_color,
     artworkKey: row.artwork_key,
+    ...(artwork ? { artwork } : {}),
     sortOrder: row.sort_order,
   }
 }
@@ -107,6 +119,23 @@ function missionContentFor(
 
 function effectiveDifficulty(content: MissionBadgeContentRow): string {
   return content.difficulty ?? 'easy'
+}
+
+function artworkFor(
+  row: MissionBadgeRow,
+  content: MissionBadgeContentRow,
+): ArtworkSpec | undefined {
+  const artwork = row.artwork ?? content.artwork
+  return artwork != null ? artworkSpecSchema.parse(artwork) : undefined
+}
+
+function isCatalogRowVisible(row: MissionBadgeRow, client: ClientCapabilities) {
+  const content = missionContentFor(row)
+  return (
+    isVisibleToClient(row, client) &&
+    content.active !== false &&
+    isVisibleToClient(content, client)
+  )
 }
 
 function isFreeCell(board: BoardRow, cell: BoardCellRow): boolean {
@@ -136,7 +165,7 @@ export class BadgesService {
     return this.supabase.adminClient
   }
 
-  async listCatalog() {
+  async listCatalog(client: ClientCapabilities = LEGACY_CLIENT_CAPABILITIES) {
     const { data, error } = await this.admin
       .from('mission_badges')
       .select(MISSION_BADGE_CATALOG_SELECT)
@@ -146,10 +175,16 @@ export class BadgesService {
 
     if (error) throw error
 
-    return ((data ?? []) as MissionBadgeRow[]).map(mapCatalogRow)
+    return ((data ?? []) as MissionBadgeRow[])
+      .filter((row) => isCatalogRowVisible(row, client))
+      .map(mapCatalogRow)
   }
 
-  async listUserBadges(userId: string, query: UserBadgesQueryInput) {
+  async listUserBadges(
+    userId: string,
+    query: UserBadgesQueryInput,
+    client: ClientCapabilities = LEGACY_CLIENT_CAPABILITIES,
+  ) {
     const { data: catalogData, error: catalogError } = await this.admin
       .from('mission_badges')
       .select(MISSION_BADGE_CATALOG_SELECT)
@@ -159,7 +194,9 @@ export class BadgesService {
 
     if (catalogError) throw catalogError
 
-    const catalog = (catalogData ?? []) as MissionBadgeRow[]
+    const catalog = ((catalogData ?? []) as MissionBadgeRow[]).filter((row) =>
+      isCatalogRowVisible(row, client),
+    )
 
     const { data: userBadgeData, error: userBadgeError } = await this.admin
       .from('user_badges')
@@ -208,12 +245,14 @@ export class BadgesService {
     const badges = filteredCatalog.map((badge) => {
       const userBadge = userBadgeMap.get(badge.id)
       const content = missionContentFor(badge)
+      const artwork = artworkFor(badge, content)
       return {
         badgeId: badge.id,
         missionId: badge.mission_id,
         title: content.label,
         difficulty: effectiveDifficulty(content),
         gradeColor: badge.grade_color,
+        ...(artwork ? { artwork } : {}),
         earned: Boolean(userBadge),
         earnedCount: userBadge?.earned_count ?? 0,
         firstEarnedAt: userBadge?.first_earned_at ?? null,
@@ -234,7 +273,11 @@ export class BadgesService {
     }
   }
 
-  async getUserBadgeDetail(userId: string, badgeId: string) {
+  async getUserBadgeDetail(
+    userId: string,
+    badgeId: string,
+    client: ClientCapabilities = LEGACY_CLIENT_CAPABILITIES,
+  ) {
     const { data: badgeData, error: badgeError } = await this.admin
       .from('mission_badges')
       .select(MISSION_BADGE_CATALOG_SELECT)
@@ -247,8 +290,10 @@ export class BadgesService {
 
     const badge = badgeData as MissionBadgeRow | null
     if (!badge) return null
+    if (!isCatalogRowVisible(badge, client)) return null
 
     const content = missionContentFor(badge)
+    const artwork = artworkFor(badge, content)
 
     const { data: userBadgeData, error: userBadgeError } = await this.admin
       .from('user_badges')
@@ -270,6 +315,7 @@ export class BadgesService {
       difficulty: effectiveDifficulty(content),
       gradeLabel: badge.grade_label,
       gradeColor: badge.grade_color,
+      ...(artwork ? { artwork } : {}),
       earned: Boolean(userBadge),
       earnedCount: userBadge?.earned_count ?? 0,
       firstEarnedAt: userBadge?.first_earned_at ?? null,

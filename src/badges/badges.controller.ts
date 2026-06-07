@@ -6,12 +6,15 @@ import {
   Param,
   Query,
   UseGuards,
+  Req,
 } from '@nestjs/common'
 import type { User } from '@supabase/supabase-js'
+import type { Request } from 'express'
 
 import { CurrentUser } from '@/auth/current-user.decorator'
 import { SupabaseAuthGuard } from '@/auth/supabase-auth.guard'
 import { BadgesService } from '@/badges/badges.service'
+import { parseClientCapabilities } from '@/common/client-capabilities'
 import {
   userBadgesQuerySchema,
   type UserBadgesQueryInput,
@@ -36,8 +39,12 @@ export class BadgesCatalogController {
 
   @Get('catalog')
   @UseGuards(SupabaseAuthGuard)
-  async catalog() {
-    return { badges: await this.badgesService.listCatalog() }
+  async catalog(@Req() request: Request) {
+    return {
+      badges: await this.badgesService.listCatalog(
+        parseClientCapabilities(request.headers),
+      ),
+    }
   }
 }
 
@@ -47,10 +54,15 @@ export class UserBadgesController {
 
   @Get()
   @UseGuards(SupabaseAuthGuard)
-  async list(@CurrentUser() user: User, @Query() query: unknown) {
+  async list(
+    @CurrentUser() user: User,
+    @Query() query: unknown,
+    @Req() request: Request,
+  ) {
     return this.badgesService.listUserBadges(
       user.id,
       parseUserBadgesQuery(query),
+      parseClientCapabilities(request.headers),
     )
   }
 
@@ -59,8 +71,13 @@ export class UserBadgesController {
   async detail(
     @CurrentUser() user: User,
     @Param('badgeId') badgeId: string,
+    @Req() request: Request,
   ) {
-    const badge = await this.badgesService.getUserBadgeDetail(user.id, badgeId)
+    const badge = await this.badgesService.getUserBadgeDetail(
+      user.id,
+      badgeId,
+      parseClientCapabilities(request.headers),
+    )
     if (!badge) throw new NotFoundException('Badge not found.')
     return { badge }
   }

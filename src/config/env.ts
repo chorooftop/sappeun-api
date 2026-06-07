@@ -28,6 +28,14 @@ export const envSchema = z.object({
   R2_ACCESS_KEY_ID: z.preprocess(emptyToUndefined, z.string().min(1)),
   R2_SECRET_ACCESS_KEY: z.preprocess(emptyToUndefined, z.string().min(1)),
   R2_BUCKET: z.preprocess(emptyToUndefined, z.string().min(1)),
+  R2_PUBLIC_ASSET_BUCKET: z.preprocess(
+    emptyToUndefined,
+    z.string().min(1).optional(),
+  ),
+  R2_PUBLIC_ASSET_BASE_URL: z.preprocess(
+    emptyToUndefined,
+    z.string().url().optional(),
+  ),
   R2_ENDPOINT: z.preprocess(emptyToUndefined, z.string().url().optional()),
   R2_REGION: z.preprocess(emptyToUndefined, z.string().default('auto')),
   R2_OWNER_HASH_SECRET: z.preprocess(emptyToUndefined, z.string().min(16)),

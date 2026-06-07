@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { artworkSpecSchema } from '@/common/artwork.schemas'
+
 export const missionCellSchema = z.object({
   id: z.string(),
   category: z.string(),
@@ -17,6 +19,7 @@ export const missionCellSchema = z.object({
   difficulty: z.string().optional(),
   noPhoto: z.boolean().optional(),
   fixedPosition: z.string().optional(),
+  artwork: artworkSpecSchema.optional(),
 })
 
 export const missionCategorySchema = z.object({
