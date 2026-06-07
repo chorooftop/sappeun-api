@@ -1,0 +1,101 @@
+{
+  "$schema": "walking-bingo-design v1.3 cell master",
+  "version": "1.3.0",
+  "updatedAt": "2026-05-14",
+  "totalCells": 48,
+  "categories": {
+    "nature": { "label": "자연·식물", "count": 8, "tone": "brand-primary" },
+    "manmade": { "label": "인공물", "count": 10, "tone": "brand-primary" },
+    "animal": { "label": "동물", "count": 6, "tone": "brand-primary" },
+    "time": { "label": "시간·숫자", "count": 6, "tone": "brand-primary" },
+    "self": { "label": "셀프", "count": 9, "tone": "cat-self", "variant": "k4Srv", "note": "타인 등장 금지. 본인이 직접 등장하거나 수행하는 셀프 촬영 미션." },
+    "color": { "label": "색깔", "count": 8, "tone": "cat-color", "note": "카테고리 tint와 실제 찾을 색 swatch를 분리한다." },
+    "special": { "label": "특수", "count": 1, "tone": "brand-accent" }
+  },
+  "cells": [
+    { "id": "n01", "category": "nature", "label": "꽃", "hint": "길가·화단·가게 앞에서 꽃이 잘 보이게 찍어요", "icon": "flower-2", "variant": "QeQCU" },
+    { "id": "n02", "category": "nature", "label": "나뭇잎", "hint": "나무나 화분에서 잎 모양이 잘 보이게 찍어요", "icon": "leaf", "variant": "QeQCU" },
+    { "id": "n03", "category": "nature", "label": "민들레", "hint": "풀밭이나 길가에서 민들레를 찾아요", "icon": "sprout", "variant": "QeQCU" },
+    { "id": "n04", "category": "nature", "label": "화분", "hint": "가게 앞이나 건물 입구 근처의 화분을 찾아요", "icon": "flower", "variant": "QeQCU" },
+    { "id": "n05", "category": "nature", "label": "나무", "hint": "줄기나 가지가 보이게 나무를 찍어요", "icon": "trees", "variant": "QeQCU" },
+    { "id": "n06", "category": "nature", "label": "구름", "hint": "하늘에 떠 있는 구름이 보이게 찍어요", "icon": "cloud", "variant": "QeQCU", "difficulty": "medium" },
+    { "id": "n07", "category": "nature", "label": "햇빛", "captureLabel": "햇빛이 드는 곳", "hint": "바닥·벽·잎에 햇빛이 밝게 닿은 곳을 찾아요", "icon": "sun", "variant": "QeQCU" },
+    { "id": "n08", "category": "nature", "label": "무지개", "hint": "하늘·간판·소품에서 무지개색을 찾아요", "icon": "rainbow", "variant": "QeQCU", "difficulty": "hard" },
+
+    { "id": "m01", "category": "manmade", "label": "자판기", "hint": "길가나 건물 안의 자판기를 찾아요", "icon": "package", "variant": "QeQCU" },
+    { "id": "m02", "category": "manmade", "label": "표지판", "hint": "길 안내·안전 안내 표지판을 찾아요", "icon": "signpost", "variant": "QeQCU" },
+    { "id": "m03", "category": "manmade", "label": "공중전화", "captureLabel": "공중전화 또는 전화부스", "hint": "공중전화나 전화부스 표시를 찾아요", "icon": "phone", "variant": "QeQCU", "difficulty": "medium" },
+    { "id": "m04", "category": "manmade", "label": "우체통", "hint": "우체통이나 우편함 표시를 찾아요", "icon": "mail", "variant": "QeQCU", "difficulty": "medium" },
+    { "id": "m05", "category": "manmade", "label": "가로등", "hint": "길 위 가로등 기둥이나 등을 찾아요", "icon": "lamp", "variant": "QeQCU" },
+    { "id": "m06", "category": "manmade", "label": "자전거", "hint": "세워진 자전거나 자전거 표식을 찾아요", "icon": "bike", "variant": "QeQCU" },
+    { "id": "m07", "category": "manmade", "label": "우산", "hint": "우산이나 우산 그림이 보이는 표식을 찾아요", "icon": "umbrella", "variant": "QeQCU" },
+    { "id": "m08", "category": "manmade", "label": "의자", "hint": "공원·가게 앞·건물 안의 의자를 찾아요", "icon": "armchair", "variant": "QeQCU" },
+    { "id": "m09", "category": "manmade", "label": "벽화", "hint": "벽에 그려진 그림이나 큰 그래픽을 찾아요", "icon": "brush", "variant": "QeQCU", "difficulty": "medium" },
+    { "id": "m10", "category": "manmade", "label": "횡단보도", "hint": "도로 위 흰 줄무늬 횡단보도를 찾아요", "icon": "square-asterisk", "variant": "QeQCU" },
+
+    { "id": "a01", "category": "animal", "label": "고양이", "hint": "멀리서 보이는 고양이를 방해하지 않고 찍어요", "icon": "cat", "variant": "QeQCU" },
+    { "id": "a02", "category": "animal", "label": "강아지", "hint": "산책 중인 강아지는 보호자와 거리를 두고 찍어요", "icon": "dog", "variant": "QeQCU" },
+    { "id": "a03", "category": "animal", "label": "참새", "hint": "전봇대·나무·바닥 근처의 작은 새를 찾아요", "icon": "bird", "variant": "QeQCU" },
+    { "id": "a04", "category": "animal", "label": "나비", "hint": "꽃이나 풀 근처에서 나비를 찾아요", "icon": "bug", "variant": "QeQCU", "difficulty": "hard" },
+    { "id": "a05", "category": "animal", "label": "비둘기", "hint": "광장이나 길가의 비둘기를 멀리서 찍어요", "icon": "bird", "variant": "QeQCU" },
+    { "id": "a06", "category": "animal", "label": "물고기", "hint": "연못·수조·간판 속 물고기를 찾아요", "icon": "fish", "variant": "QeQCU", "difficulty": "medium" },
+
+    { "id": "t01", "category": "time", "label": "7", "caption": "숫자 찾기", "captureLabel": "숫자 7", "hint": "간판·주소·버스 번호처럼 보이는 숫자 7을 찾아요", "icon": null, "textOnly": true, "fontSize": 34, "variant": "QeQCU" },
+    { "id": "t02", "category": "time", "label": "5", "caption": "숫자 찾기", "captureLabel": "숫자 5", "hint": "간판·주소·가격표처럼 보이는 숫자 5를 찾아요", "icon": null, "textOnly": true, "fontSize": 34, "variant": "QeQCU" },
+    { "id": "t03", "category": "time", "label": "T", "caption": "글자 찾기", "captureLabel": "T 글자", "hint": "간판·로고·티셔츠처럼 보이는 T 글자를 찾아요", "icon": null, "textOnly": true, "fontSize": 30, "variant": "QeQCU" },
+    { "id": "t04", "category": "time", "label": "시계", "hint": "건물 벽·간판·손목 위에서 시간이 보이는 시계를 찾아요", "icon": "clock", "variant": "QeQCU" },
+    { "id": "t05", "category": "time", "label": "달", "captureLabel": "달 모양", "hint": "하늘이나 간판·소품에서 달 모양을 찾아요", "icon": "moon", "variant": "QeQCU", "difficulty": "medium" },
+    { "id": "t06", "category": "time", "label": "별", "captureLabel": "별 모양", "hint": "간판·스티커·장식에서 별 모양을 찾아요", "icon": "star", "variant": "QeQCU", "difficulty": "hard" },
+
+    { "id": "sf01", "category": "self", "label": "활짝 웃은 셀카", "hint": "얼굴이 보이게 활짝 웃은 셀카를 찍어요", "icon": "smile", "variant": "k4Srv", "camera": "front", "difficulty": "easy" },
+    { "id": "sf02", "category": "self", "label": "손가락 하트", "hint": "손가락 하트가 화면 중앙에 보이게 찍어요", "icon": "heart", "variant": "k4Srv", "camera": "front", "difficulty": "easy" },
+    { "id": "sf03", "category": "self", "label": "엄지척 셀카", "hint": "엄지척 포즈가 보이게 셀카를 찍어요", "icon": "thumbs-up", "variant": "k4Srv", "camera": "front", "difficulty": "easy" },
+    { "id": "sf04", "category": "self", "label": "브이 포즈", "hint": "브이 손 모양이 잘 보이게 찍어요", "icon": "hand", "variant": "k4Srv", "camera": "front", "difficulty": "easy" },
+    { "id": "sf05", "category": "self", "label": "오늘의 신발", "hint": "오늘 신고 나온 신발이 보이게 찍어요", "icon": "footprints", "variant": "k4Srv", "camera": "back", "difficulty": "easy" },
+    { "id": "sf06", "category": "self", "label": "내 그림자", "hint": "바닥이나 벽에 생긴 내 그림자를 찍어요", "icon": "cloud-sun", "variant": "k4Srv", "camera": "back", "difficulty": "medium" },
+    { "id": "sf07", "category": "self", "label": "거울 셀카", "hint": "거울에 비친 내 모습이 보이게 찍어요", "icon": "scan-face", "variant": "k4Srv", "camera": "back", "difficulty": "medium" },
+    { "id": "sf08", "category": "self", "label": "표정 셀카", "hint": "오늘 기분이 드러나는 표정으로 셀카를 찍어요", "icon": "laugh", "variant": "k4Srv", "camera": "front", "difficulty": "easy" },
+    { "id": "sf09", "category": "self", "label": "옷 색 셀카", "captureLabel": "옷 색 셀카", "hint": "오늘 입은 옷 색이 보이게 찍어요", "icon": "shirt", "variant": "k4Srv", "camera": "front", "difficulty": "easy" },
+
+    { "id": "c01", "category": "color", "label": "빨간색", "caption": "색 찾기", "captureLabel": "빨간색", "hint": "간판·꽃·옷·포장지처럼 빨간 부분을 찾아요", "icon": null, "swatch": "red", "swatchLabel": "빨강", "variant": "QeQCU" },
+    { "id": "c02", "category": "color", "label": "노란색", "caption": "색 찾기", "captureLabel": "노란색", "hint": "표지판·불빛·문구류처럼 노란 부분을 찾아요", "icon": null, "swatch": "yellow", "swatchLabel": "노랑", "variant": "QeQCU" },
+    { "id": "c03", "category": "color", "label": "초록색", "caption": "색 찾기", "captureLabel": "초록색", "hint": "잎·문·간판처럼 초록 부분을 찾아요", "icon": null, "swatch": "green", "swatchLabel": "초록", "variant": "QeQCU" },
+    { "id": "c04", "category": "color", "label": "파란색", "caption": "색 찾기", "captureLabel": "파란색", "hint": "하늘·표지·차량처럼 파란 부분을 찾아요", "icon": null, "swatch": "blue", "swatchLabel": "파랑", "variant": "QeQCU" },
+    { "id": "c05", "category": "color", "label": "분홍색", "caption": "색 찾기", "captureLabel": "분홍색", "hint": "꽃·소품·간판처럼 분홍 부분을 찾아요", "icon": null, "swatch": "pink", "swatchLabel": "분홍", "variant": "QeQCU" },
+    { "id": "c06", "category": "color", "label": "하얀색", "caption": "색 찾기", "captureLabel": "하얀색", "hint": "벽·구름·표지처럼 하얀 부분을 찾아요", "icon": null, "swatch": "white", "swatchLabel": "하양", "variant": "QeQCU" },
+    { "id": "c07", "category": "color", "label": "검은색", "caption": "색 찾기", "captureLabel": "검은색", "hint": "글자·그림자·문처럼 검은 부분을 찾아요", "icon": null, "swatch": "black", "swatchLabel": "검정", "variant": "QeQCU", "difficulty": "medium" },
+    { "id": "c08", "category": "color", "label": "알록달록", "caption": "색 찾기", "captureLabel": "알록달록한 색", "hint": "여러 색이 함께 보이는 대상을 찾아요", "icon": null, "swatch": "rainbow", "swatchLabel": "여러 색", "variant": "QeQCU", "difficulty": "medium" },
+
+    { "id": "free", "category": "special", "label": "FREE", "captureLabel": "오늘의 FREE 클립", "hint": "지금 보이는 풍경이나 함께 시작하고 싶은 장면을 자유롭게 담아요", "icon": "camera", "variant": "rAdyJ", "fixedPosition": "center", "camera": "back" }
+  ],
+  "overrideKeys": {
+    "QeQCU": { "iconNode": "BRawi", "labelNode": "DBUFO", "note": "Cycle 7 변경: BRawi→rQzgX(ref slot, ref→TEUMp), DBUFO→TG0bh. 실제 override는 신규 ID 사용." },
+    "k4Srv": { "iconNode": "WDIT8", "labelNode": "w6VJW", "note": "Cycle 10 변경: 사람/NoPhoto → 셀프(Self). 타인 촬영 금지, 본인 셀프 미션 전용." }
+  },
+  "stateVariants": {
+    "BXA7m": "ClipFilled (클립 채워진 셀, 포스터 fill로 라벨 위에 표시)",
+    "io2FW": "Marked (클립 없는 특수 셀 직접 완료 표시)",
+    "rAdyJ": "FreeIdle (중앙 FREE 촬영 전)",
+    "d5Ptb": "FreeCaptured (중앙 FREE 촬영 후)",
+    "Ppbhg": "BingoGlow (빙고 줄 셀)"
+  },
+  "cameraModes": {
+    "front": "전면 카메라 잠금. 셀프 미션 (smile/heart/thumbsUp).",
+    "back": "후면 카메라 기본. 외부 대상 미션 (shadow/feet/jump/mirror).",
+    "timer": "셀프 타이머 (초). 본인이 카메라 뒤로 들어가는 미션."
+  },
+  "seedRecipes": {
+    "default5x5": {
+      "size": 25,
+      "freePosition": 12,
+      "compose": "FREE 중앙 + 카테고리 비율: nature 6, manmade 6, animal 4, time 2, self 3, color 3 (총 24 + FREE)",
+      "notes": "self 셀은 3개 이하로 제한 — 너무 많으면 산책보다 셀카 게임이 됨. color는 쉬운 탐색 리듬을 위해 3개 배치."
+    },
+    "easy3x3": {
+      "size": 9,
+      "freePosition": 4,
+      "compose": "FREE 중앙 + nature 3, manmade 2, animal 1, self 1, color 1 (총 8 + FREE)",
+      "notes": "쉬운 셀 위주. self는 easy 난이도만, color는 1개만 배치한다."
+    }
+  }
+}

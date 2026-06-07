@@ -8,6 +8,7 @@ import { validateEnv } from '@/config/env'
 import { HealthModule } from '@/health/health.module'
 import { JobsModule } from '@/jobs/jobs.module'
 import { MediaModule } from '@/media/media.module'
+import { MissionsModule } from '@/missions/missions.module'
 import { SharesModule } from '@/shares/shares.module'
 import { StorageModule } from '@/storage/storage.module'
 import { SupabaseModule } from '@/supabase/supabase.module'
@@ -26,6 +27,7 @@ import { UsersModule } from '@/users/users.module'
     UsersModule,
     BoardsModule,
     BadgesModule,
+    MissionsModule,
     MediaModule,
     SharesModule,
     JobsModule,

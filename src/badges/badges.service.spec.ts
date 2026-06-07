@@ -13,10 +13,18 @@ type QueryResult = {
 }
 
 type EqCall = { column: string; value: unknown }
+type SelectCall = { columns: string }
 
-function makeQuery(result: QueryResult, onEq?: (call: EqCall) => void) {
+function makeQuery(
+  result: QueryResult,
+  onEq?: (call: EqCall) => void,
+  onSelect?: (call: SelectCall) => void,
+) {
   const query: Record<string, unknown> = {
-    select: () => query,
+    select: (columns = '*') => {
+      onSelect?.({ columns: String(columns) })
+      return query
+    },
     eq: (column: string, value: unknown) => {
       onEq?.({ column, value })
       return query
@@ -39,15 +47,23 @@ function makeAdmin(
   queues: Record<string, QueryResult[]>,
   rpc?: { result: QueryResult; calls: unknown[] },
   eqCalls?: Record<string, EqCall[]>,
+  selectCalls?: Record<string, SelectCall[]>,
 ) {
   return {
     from(table: string) {
       const next = queues[table]?.shift()
       if (!next) throw new Error(`Unexpected table query: ${table}`)
-      return makeQuery(next, (call) => {
-        if (!eqCalls) return
-        ;(eqCalls[table] ??= []).push(call)
-      })
+      return makeQuery(
+        next,
+        (call) => {
+          if (!eqCalls) return
+          ;(eqCalls[table] ??= []).push(call)
+        },
+        (call) => {
+          if (!selectCalls) return
+          ;(selectCalls[table] ??= []).push(call)
+        },
+      )
     },
     rpc(name: string, args: unknown) {
       rpc?.calls.push({ name, args })
@@ -56,10 +72,20 @@ function makeAdmin(
   }
 }
 
-function makeService(
-  admin: ReturnType<typeof makeAdmin>,
-): BadgesService {
+function makeService(admin: ReturnType<typeof makeAdmin>): BadgesService {
   return new BadgesService({ adminClient: admin } as never)
+}
+
+function expectMissionBadgeSelectUsesContentJoin(select: string) {
+  expect(select).toContain(
+    'mission_content!mission_badges_mission_content_fkey(label, category, difficulty)',
+  )
+
+  const withoutContentJoin = select.replace(
+    /mission_content![^(]+\([^)]*\)/g,
+    '',
+  )
+  expect(withoutContentJoin).not.toMatch(/\b(title|category|difficulty)\b/)
 }
 
 function catalogRow(
@@ -81,14 +107,16 @@ function catalogRow(
     id: overrides.id ?? 'mission:n01:v1',
     mission_id: overrides.mission_id ?? 'n01',
     catalog_version: overrides.catalog_version ?? 'api-migration-v1',
-    title: overrides.title ?? '꽃',
-    category: overrides.category ?? 'nature',
-    difficulty: overrides.difficulty ?? 'easy',
     grade_label: overrides.grade_label ?? '일상 배지',
     grade_color: overrides.grade_color ?? '#6ED6A0',
     artwork_key: overrides.artwork_key ?? 'mission/n01',
     sort_order: overrides.sort_order ?? 10,
     active: overrides.active ?? true,
+    mission_content: {
+      label: overrides.title ?? '꽃',
+      category: overrides.category ?? 'nature',
+      difficulty: overrides.difficulty ?? 'easy',
+    },
   }
 }
 
@@ -215,10 +243,12 @@ describe('BadgesService.listCatalog', () => {
 
   it('scopes the catalog query to the active catalog version', async () => {
     const eqCalls: Record<string, EqCall[]> = {}
+    const selectCalls: Record<string, SelectCall[]> = {}
     const admin = makeAdmin(
       { mission_badges: [{ data: [catalogRow()], error: null }] },
       undefined,
       eqCalls,
+      selectCalls,
     )
 
     await makeService(admin).listCatalog()
@@ -231,14 +261,25 @@ describe('BadgesService.listCatalog', () => {
       column: 'active',
       value: true,
     })
+    expectMissionBadgeSelectUsesContentJoin(
+      selectCalls.mission_badges[0].columns,
+    )
   })
 })
 
 describe('BadgesService.listUserBadges', () => {
   function catalogFixture() {
     return [
-      catalogRow({ id: 'mission:n01:v1', mission_id: 'n01', difficulty: 'easy' }),
-      catalogRow({ id: 'mission:n02:v1', mission_id: 'n02', difficulty: 'easy' }),
+      catalogRow({
+        id: 'mission:n01:v1',
+        mission_id: 'n01',
+        difficulty: 'easy',
+      }),
+      catalogRow({
+        id: 'mission:n02:v1',
+        mission_id: 'n02',
+        difficulty: 'easy',
+      }),
       catalogRow({
         id: 'mission:sf06:v1',
         mission_id: 'sf06',
@@ -398,6 +439,7 @@ describe('BadgesService.getUserBadgeDetail', () => {
 
 describe('BadgesService.awardBoardBadges', () => {
   it('collects official mission badge ids, calls the RPC, and maps the result', async () => {
+    const selectCalls: Record<string, SelectCall[]> = {}
     const rpc = {
       result: {
         data: [
@@ -416,20 +458,26 @@ describe('BadgesService.awardBoardBadges', () => {
               {
                 id: 'mission:m00:v1',
                 mission_id: 'm00',
-                title: '꽃',
-                difficulty: 'easy',
                 grade_color: '#6ED6A0',
                 grade_label: '일상 배지',
                 active: true,
+                mission_content: {
+                  label: '꽃',
+                  category: 'nature',
+                  difficulty: 'easy',
+                },
               },
               {
                 id: 'mission:m01:v1',
                 mission_id: 'm01',
-                title: '나뭇잎',
-                difficulty: 'medium',
                 grade_color: '#F5A623',
                 grade_label: '도전 배지',
                 active: true,
+                mission_content: {
+                  label: '나뭇잎',
+                  category: 'nature',
+                  difficulty: 'medium',
+                },
               },
             ],
             error: null,
@@ -437,6 +485,8 @@ describe('BadgesService.awardBoardBadges', () => {
         ],
       },
       rpc,
+      undefined,
+      selectCalls,
     )
 
     // Free position (4) is excluded from minting; remaining 8 cells map to badges.
@@ -464,6 +514,9 @@ describe('BadgesService.awardBoardBadges', () => {
 
     expect(result.badgeEligible).toBe(true)
     expect(result.badgeCount).toBe(2)
+    expectMissionBadgeSelectUsesContentJoin(
+      selectCalls.mission_badges[0].columns,
+    )
     expect(result.earnedBadges).toEqual([
       expect.objectContaining({
         badgeId: 'mission:m00:v1',
@@ -571,11 +624,14 @@ describe('BadgesService.awardBoardBadges', () => {
         {
           id: 'mission:m00:v1',
           mission_id: 'm00',
-          title: '꽃',
-          difficulty: 'easy',
           grade_color: '#6ED6A0',
           grade_label: '일상 배지',
           active: true,
+          mission_content: {
+            label: '꽃',
+            category: 'nature',
+            difficulty: 'easy',
+          },
         },
       ],
       error: null,
@@ -652,7 +708,9 @@ describe('BadgesService.getBoardBadges', () => {
       mission_badges: [{ data: [catalogRow()], error: null }],
     })
 
-    const result = await makeService(admin).getBoardBadges('user-1', ['board-1'])
+    const result = await makeService(admin).getBoardBadges('user-1', [
+      'board-1',
+    ])
 
     expect(result.get('board-1')).toEqual([
       expect.objectContaining({
@@ -712,16 +770,19 @@ describe('badge catalog seed coverage', () => {
     return ids
   }
 
-  it.skipIf(!sheetAvailable)('seeds every official mission id from sheet.json (47 missions, free excluded)', () => {
-    const missionIds = readMissionIdsFromSheet()
-    const seeded = readSeededMissionIds()
+  it.skipIf(!sheetAvailable)(
+    'seeds every official mission id from sheet.json (47 missions, free excluded)',
+    () => {
+      const missionIds = readMissionIdsFromSheet()
+      const seeded = readSeededMissionIds()
 
-    expect(missionIds).toHaveLength(47)
-    expect(missionIds).not.toContain('free')
+      expect(missionIds).toHaveLength(47)
+      expect(missionIds).not.toContain('free')
 
-    const missing = missionIds.filter((id) => !seeded.has(id))
-    expect(missing).toEqual([])
-  })
+      const missing = missionIds.filter((id) => !seeded.has(id))
+      expect(missing).toEqual([])
+    },
+  )
 
   it('does not seed a badge for the free cell', () => {
     const seeded = readSeededMissionIds()

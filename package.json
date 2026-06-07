@@ -11,6 +11,8 @@
   "scripts": {
     "build": "nest build",
     "dev": "nest start --watch",
+    "gen:mission-seed": "node scripts/gen-mission-seed.mjs",
+    "verify:mission-seed": "node scripts/gen-mission-seed.mjs && git diff --exit-code supabase/migrations/0010_mission_content.sql",
     "lint": "eslint .",
     "start": "node dist/main.js",
     "test": "vitest run",

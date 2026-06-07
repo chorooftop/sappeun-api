@@ -1,23 +1,40 @@
 import { Injectable } from '@nestjs/common'
 
 import type { UserBadgesQueryInput } from '@/badges/badges.schemas'
+import { MISSION_CATALOG_VERSION } from '@/missions/missions.constants'
 import { SupabaseService } from '@/supabase/supabase.service'
 import type { BoardCellRow, BoardRow } from '@/boards/boards.service'
 
-const MISSION_CATALOG_VERSION = 'api-migration-v1'
+const MISSION_BADGE_CONTENT_JOIN =
+  'mission_content!mission_badges_mission_content_fkey(label, category, difficulty)'
+
+const MISSION_BADGE_CATALOG_SELECT = `id, mission_id, catalog_version, grade_label, grade_color, artwork_key, sort_order, active, ${MISSION_BADGE_CONTENT_JOIN}`
+
+const MISSION_BADGE_AWARD_SELECT = `id, mission_id, catalog_version, grade_color, grade_label, active, ${MISSION_BADGE_CONTENT_JOIN}`
+
+interface MissionBadgeContentRow {
+  label: string
+  category: string
+  difficulty: string | null
+}
 
 interface MissionBadgeRow {
   id: string
   mission_id: string
   catalog_version: string
-  title: string
-  category: string | null
-  difficulty: string
   grade_label: string
   grade_color: string
   artwork_key: string | null
   sort_order: number
   active: boolean
+  mission_content: MissionBadgeContentRow | MissionBadgeContentRow[] | null
+}
+
+interface MissionBadgeContentOwner {
+  id: string
+  mission_id: string
+  catalog_version: string
+  mission_content: MissionBadgeContentRow | MissionBadgeContentRow[] | null
 }
 
 interface BoardBadgeRow {
@@ -59,13 +76,14 @@ export interface AwardBoardBadgesResult {
 }
 
 function mapCatalogRow(row: MissionBadgeRow) {
+  const content = missionContentFor(row)
   return {
     badgeId: row.id,
     missionId: row.mission_id,
     catalogVersion: row.catalog_version,
-    title: row.title,
-    category: row.category,
-    difficulty: row.difficulty,
+    title: content.label,
+    category: content.category,
+    difficulty: effectiveDifficulty(content),
     gradeLabel: row.grade_label,
     gradeColor: row.grade_color,
     artworkKey: row.artwork_key,
@@ -73,13 +91,33 @@ function mapCatalogRow(row: MissionBadgeRow) {
   }
 }
 
+function missionContentFor(
+  row: MissionBadgeContentOwner,
+): MissionBadgeContentRow {
+  const content = Array.isArray(row.mission_content)
+    ? row.mission_content[0]
+    : row.mission_content
+  if (!content) {
+    throw new Error(
+      `Mission content missing for badge ${row.id} (${row.catalog_version}/${row.mission_id}).`,
+    )
+  }
+  return content
+}
+
+function effectiveDifficulty(content: MissionBadgeContentRow): string {
+  return content.difficulty ?? 'easy'
+}
+
 function isFreeCell(board: BoardRow, cell: BoardCellRow): boolean {
   return cell.position === board.free_position
 }
 
 function isUneditedCell(cell: BoardCellRow): boolean {
-  return (cell as BoardCellRow & { original_mission_snapshot?: unknown })
-    .original_mission_snapshot == null
+  return (
+    (cell as BoardCellRow & { original_mission_snapshot?: unknown })
+      .original_mission_snapshot == null
+  )
 }
 
 function isOfficialMissionCell(board: BoardRow, cell: BoardCellRow): boolean {
@@ -101,9 +139,7 @@ export class BadgesService {
   async listCatalog() {
     const { data, error } = await this.admin
       .from('mission_badges')
-      .select(
-        'id, mission_id, catalog_version, title, category, difficulty, grade_label, grade_color, artwork_key, sort_order, active',
-      )
+      .select(MISSION_BADGE_CATALOG_SELECT)
       .eq('catalog_version', MISSION_CATALOG_VERSION)
       .eq('active', true)
       .order('sort_order', { ascending: true })
@@ -116,9 +152,7 @@ export class BadgesService {
   async listUserBadges(userId: string, query: UserBadgesQueryInput) {
     const { data: catalogData, error: catalogError } = await this.admin
       .from('mission_badges')
-      .select(
-        'id, mission_id, catalog_version, title, category, difficulty, grade_label, grade_color, artwork_key, sort_order, active',
-      )
+      .select(MISSION_BADGE_CATALOG_SELECT)
       .eq('catalog_version', MISSION_CATALOG_VERSION)
       .eq('active', true)
       .order('sort_order', { ascending: true })
@@ -145,7 +179,8 @@ export class BadgesService {
     const statusFilter = query.status
 
     const filteredCatalog = catalog.filter((badge) => {
-      if (difficultyFilter !== 'all' && badge.difficulty !== difficultyFilter) {
+      const difficulty = effectiveDifficulty(missionContentFor(badge))
+      if (difficultyFilter !== 'all' && difficulty !== difficultyFilter) {
         return false
       }
       const earned = userBadgeMap.has(badge.id)
@@ -162,20 +197,22 @@ export class BadgesService {
 
     for (const badge of catalog) {
       if (userBadgeMap.has(badge.id)) {
+        const difficulty = effectiveDifficulty(missionContentFor(badge))
         earnedCount += 1
-        if (badge.difficulty === 'easy') easyEarnedCount += 1
-        else if (badge.difficulty === 'medium') mediumEarnedCount += 1
-        else if (badge.difficulty === 'hard') hardEarnedCount += 1
+        if (difficulty === 'easy') easyEarnedCount += 1
+        else if (difficulty === 'medium') mediumEarnedCount += 1
+        else if (difficulty === 'hard') hardEarnedCount += 1
       }
     }
 
     const badges = filteredCatalog.map((badge) => {
       const userBadge = userBadgeMap.get(badge.id)
+      const content = missionContentFor(badge)
       return {
         badgeId: badge.id,
         missionId: badge.mission_id,
-        title: badge.title,
-        difficulty: badge.difficulty,
+        title: content.label,
+        difficulty: effectiveDifficulty(content),
         gradeColor: badge.grade_color,
         earned: Boolean(userBadge),
         earnedCount: userBadge?.earned_count ?? 0,
@@ -200,9 +237,7 @@ export class BadgesService {
   async getUserBadgeDetail(userId: string, badgeId: string) {
     const { data: badgeData, error: badgeError } = await this.admin
       .from('mission_badges')
-      .select(
-        'id, mission_id, catalog_version, title, category, difficulty, grade_label, grade_color, artwork_key, sort_order, active',
-      )
+      .select(MISSION_BADGE_CATALOG_SELECT)
       .eq('id', badgeId)
       .eq('catalog_version', MISSION_CATALOG_VERSION)
       .eq('active', true)
@@ -212,6 +247,8 @@ export class BadgesService {
 
     const badge = badgeData as MissionBadgeRow | null
     if (!badge) return null
+
+    const content = missionContentFor(badge)
 
     const { data: userBadgeData, error: userBadgeError } = await this.admin
       .from('user_badges')
@@ -229,8 +266,8 @@ export class BadgesService {
     return {
       badgeId: badge.id,
       missionId: badge.mission_id,
-      title: badge.title,
-      difficulty: badge.difficulty,
+      title: content.label,
+      difficulty: effectiveDifficulty(content),
       gradeLabel: badge.grade_label,
       gradeColor: badge.grade_color,
       earned: Boolean(userBadge),
@@ -252,8 +289,7 @@ export class BadgesService {
     const { userId, board, cells } = params
 
     // 1. Eligibility re-check via derived predicate (flag-drift safe)
-    const isMissionBoard =
-      (board.board_kind ?? 'mission') === 'mission'
+    const isMissionBoard = (board.board_kind ?? 'mission') === 'mission'
     const allCellsUnedited = cells.every(isUneditedCell)
     const boardSize = board.cell_ids?.length ?? 0
     const completedCount = cells.filter(
@@ -285,9 +321,7 @@ export class BadgesService {
     // 3. Look up mission_badges by (catalog_version, mission_id) → badge ids + catalog info
     const { data: catalogData, error: catalogError } = await this.admin
       .from('mission_badges')
-      .select(
-        'id, mission_id, title, difficulty, grade_color, grade_label, active',
-      )
+      .select(MISSION_BADGE_AWARD_SELECT)
       .eq('catalog_version', MISSION_CATALOG_VERSION)
       .in('mission_id', missionIds)
       .eq('active', true)
@@ -297,11 +331,11 @@ export class BadgesService {
     const catalogRows = (catalogData ?? []) as Array<{
       id: string
       mission_id: string
-      title: string
-      difficulty: string
+      catalog_version: string
       grade_color: string
       grade_label: string
       active: boolean
+      mission_content: MissionBadgeContentRow | MissionBadgeContentRow[] | null
     }>
 
     const badgeIds = catalogRows.map((row) => row.id)
@@ -332,12 +366,13 @@ export class BadgesService {
       .map((result) => {
         const catalog = catalogById.get(result.badge_id)
         if (!catalog) return null
+        const content = missionContentFor(catalog)
 
         return {
           badgeId: result.badge_id,
           missionId: catalog.mission_id,
-          title: catalog.title,
-          difficulty: catalog.difficulty,
+          title: content.label,
+          difficulty: effectiveDifficulty(content),
           gradeColor: catalog.grade_color,
           earnedAt: boardBadgeEarnedAt,
           isFirstEarn: result.is_first_earn,
@@ -369,7 +404,9 @@ export class BadgesService {
     const boardBadgeRows = (boardBadgeData ?? []) as BoardBadgeRow[]
     if (boardBadgeRows.length === 0) return new Map()
 
-    const uniqueBadgeIds = [...new Set(boardBadgeRows.map((row) => row.badge_id))]
+    const uniqueBadgeIds = [
+      ...new Set(boardBadgeRows.map((row) => row.badge_id)),
+    ]
 
     // Earned badges are a permanent achievement record: look them up by id only,
     // intentionally ignoring active/catalog_version so a historically-earned
@@ -377,9 +414,7 @@ export class BadgesService {
     // superseded by a new catalog version. Do not add an active/version filter.
     const { data: catalogData, error: catalogError } = await this.admin
       .from('mission_badges')
-      .select(
-        'id, mission_id, title, difficulty, grade_color, grade_label, active',
-      )
+      .select(MISSION_BADGE_AWARD_SELECT)
       .in('id', uniqueBadgeIds)
 
     if (catalogError) throw catalogError
@@ -393,13 +428,14 @@ export class BadgesService {
     for (const row of boardBadgeRows) {
       const catalog = catalogMap.get(row.badge_id)
       if (!catalog) continue
+      const content = missionContentFor(catalog)
 
       const list = result.get(row.board_id) ?? []
       list.push({
         badgeId: row.badge_id,
         missionId: catalog.mission_id,
-        title: catalog.title,
-        difficulty: catalog.difficulty,
+        title: content.label,
+        difficulty: effectiveDifficulty(content),
         gradeColor: catalog.grade_color,
         earnedAt: row.earned_at,
       })
