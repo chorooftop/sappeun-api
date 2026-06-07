@@ -6,7 +6,7 @@
 프로젝트:  wtptvgxyqkqqsfkdsoox (리전: ap-south-1)
 정식 덤프: supabase/migrations/0001_remote_baseline.sql (초기화 기준 schema-only baseline, 1150줄)
 진단 도구: scripts/introspect-schema.mjs(REST), scripts/introspect.sql(psql)
-최신 migration: 0006_bingo_editable_badges.sql
+최신 migration: 0009_mission_difficulty_sync.sql
 ```
 
 > **Phase 0 완료.** 컬럼·타입·RLS·FK·CHECK·트리거까지 전부 실측 확정.
@@ -24,6 +24,12 @@
 >
 > **0008 추가 (2026-06-05).** `award_board_badges`의 PL/pgSQL 출력 컬럼 `badge_id`와
 > `on conflict` 컬럼 참조 ambiguity를 피하도록 primary-key constraint target을 명시한다.
+>
+> **0009 추가 (2026-06-07).** `0006` catalog seed가 difficulty 편집 이전 sheet.json을
+> 기준으로 해 11개 미션이 'easy'로 남아 있던 것을 현행 sheet.json(v1.3.0, difficulty 갱신)에
+> 맞춰 `mission_badges`를 in-place UPDATE한다. medium 8개(n06/m03/m04/m09/a06/t05/c07/c08),
+> hard 3개(n08/a04/t06). catalog_version은 `api-migration-v1` 유지 → 기존 user_badges는
+> join으로 자동 보정. 운영 미가동(line 13) 상태라 backfill/재발급 불필요.
 
 ---
 
