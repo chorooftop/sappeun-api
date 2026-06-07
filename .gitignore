@@ -9,3 +9,5 @@ coverage
 
 .gstack/
 .omc/
+.wrangler/
+artifacts/mission-artwork/**/raw-node-export/

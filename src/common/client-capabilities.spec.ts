@@ -36,18 +36,22 @@ describe('parseClientCapabilities', () => {
     expect([...parsed.capabilities]).toEqual([])
   })
 
-  it('degrades partial metadata headers to legacy client metadata', () => {
+  it('parses app build without capabilities', () => {
     const buildOnly = parseClientCapabilities({
       'x-sappeun-app-build': '202606080001',
     })
+
+    expect(buildOnly.appBuild).toBe(202606080001)
+    expect([...buildOnly.capabilities]).toEqual([])
+  })
+
+  it('parses capabilities without app build', () => {
     const capabilitiesOnly = parseClientCapabilities({
       'x-sappeun-client-capabilities': 'runtime-artwork-v1',
     })
 
-    expect(buildOnly.appBuild).toBeNull()
-    expect([...buildOnly.capabilities]).toEqual([])
     expect(capabilitiesOnly.appBuild).toBeNull()
-    expect([...capabilitiesOnly.capabilities]).toEqual([])
+    expect([...capabilitiesOnly.capabilities]).toEqual(['runtime-artwork-v1'])
   })
 
   it('degrades blank metadata headers to legacy client metadata', () => {
@@ -95,6 +99,31 @@ describe('isVisibleToClient', () => {
         runtimeClient,
       ),
     ).toBe(true)
+  })
+
+  it('allows capability-only rows without app build', () => {
+    expect(
+      isVisibleToClient(
+        { required_capabilities: ['runtime-artwork-v1'] },
+        parseClientCapabilities({
+          'x-sappeun-client-capabilities': 'runtime-artwork-v1',
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  it('keeps build-gated rows hidden without app build', () => {
+    expect(
+      isVisibleToClient(
+        {
+          min_app_build: 202606080000,
+          required_capabilities: ['runtime-artwork-v1'],
+        },
+        parseClientCapabilities({
+          'x-sappeun-client-capabilities': 'runtime-artwork-v1',
+        }),
+      ),
+    ).toBe(false)
   })
 
   it('applies active windows', () => {

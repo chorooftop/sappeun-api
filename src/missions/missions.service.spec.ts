@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
+import {
+  MISSION_CONTENT_UPDATED_AT,
+  MISSION_CONTENT_VERSION,
+} from '@/missions/missions.constants'
 import { MissionsService } from '@/missions/missions.service'
 
 type QueryResult = {
@@ -121,8 +125,8 @@ describe('MissionsService.getMissionContent', () => {
     const result = await makeService(admin).getMissionContent()
 
     expect(result.totalCells).toBe(3)
-    expect(result.version).toBe('1.3.0')
-    expect(result.updatedAt).toBe('2026-05-14')
+    expect(result.version).toBe(MISSION_CONTENT_VERSION)
+    expect(result.updatedAt).toBe(MISSION_CONTENT_UPDATED_AT)
 
     expect(result.cells[0]).toEqual({
       id: 'n01',
@@ -210,6 +214,11 @@ describe('MissionsService.getMissionContent', () => {
         mission_id: 'new-remote',
         sort_order: 10,
         required_capabilities: ['runtime-artwork-v1'],
+      }),
+      contentRow({
+        mission_id: 'build-gated-remote',
+        sort_order: 20,
+        required_capabilities: ['runtime-artwork-v1'],
         min_app_build: 202606080001,
       }),
     ]
@@ -226,7 +235,18 @@ describe('MissionsService.getMissionContent', () => {
       mission_content: [{ data: rows, error: null }],
       mission_categories: [{ data: [], error: null }],
     })
-    const runtime = await makeService(runtimeAdmin).getMissionContent(
+    const runtime = await makeService(runtimeAdmin).getMissionContent(undefined, {
+      appBuild: null,
+      capabilities: new Set(['runtime-artwork-v1']),
+    })
+
+    expect(runtime.cells.map((cell) => cell.id)).toEqual(['n01', 'new-remote'])
+
+    const buildRuntimeAdmin = makeAdmin({
+      mission_content: [{ data: rows, error: null }],
+      mission_categories: [{ data: [], error: null }],
+    })
+    const buildRuntime = await makeService(buildRuntimeAdmin).getMissionContent(
       undefined,
       {
         appBuild: 202606080001,
@@ -234,7 +254,11 @@ describe('MissionsService.getMissionContent', () => {
       },
     )
 
-    expect(runtime.cells.map((cell) => cell.id)).toEqual(['n01', 'new-remote'])
+    expect(buildRuntime.cells.map((cell) => cell.id)).toEqual([
+      'n01',
+      'new-remote',
+      'build-gated-remote',
+    ])
   })
 
   it('returns an empty payload when there is no content', async () => {

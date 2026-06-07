@@ -71,6 +71,9 @@ importers:
       eslint-config-prettier:
         specifier: ^10.1.8
         version: 10.1.8(eslint@9.39.4)
+      pngjs:
+        specifier: ^7.0.0
+        version: 7.0.0
       prettier:
         specifier: ^3.7.4
         version: 3.8.3
@@ -3257,6 +3260,13 @@ packages:
       }
     engines: { node: '>=4' }
 
+  pngjs@7.0.0:
+    resolution:
+      {
+        integrity: sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow==,
+      }
+    engines: { node: '>=14.19.0' }
+
   postcss@8.5.15:
     resolution:
       {
@@ -6121,6 +6131,8 @@ snapshots:
   picomatch@4.0.4: {}
 
   pluralize@8.0.0: {}
+
+  pngjs@7.0.0: {}
 
   postcss@8.5.15:
     dependencies:

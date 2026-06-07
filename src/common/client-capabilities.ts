@@ -49,36 +49,39 @@ export function parseClientCapabilities(
   const rawCapabilities = headerValue(headers, CLIENT_CAPABILITIES_HEADER)
 
   if (rawBuild === null || rawCapabilities === null) return legacyClient()
-  if (rawBuild === undefined && rawCapabilities === undefined) {
-    return legacyClient()
-  }
-  if (rawBuild === undefined || rawCapabilities === undefined) {
-    return legacyClient()
-  }
-  if (rawBuild.trim() === '' || rawCapabilities.trim() === '') {
-    return legacyClient()
-  }
 
   let appBuild: number | null = null
-  if (!/^\d+$/.test(rawBuild.trim())) return legacyClient()
-  const parsed = Number(rawBuild.trim())
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return legacyClient()
-  appBuild = parsed
+  if (rawBuild !== undefined) {
+    const normalizedBuild = rawBuild.trim()
+    if (normalizedBuild === '') return legacyClient()
+    if (!/^\d+$/.test(normalizedBuild)) return legacyClient()
+    const parsed = Number(normalizedBuild)
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) return legacyClient()
+    appBuild = parsed
+  }
 
   const capabilities = new Set<string>()
-  const tokens = rawCapabilities
-    .split(',')
-    .map((token) => token.trim())
-    .filter(Boolean)
+  if (rawCapabilities !== undefined) {
+    if (rawCapabilities.trim() === '') return legacyClient()
 
-  if (tokens.length === 0 || tokens.length > MAX_CAPABILITY_TOKENS) {
-    return legacyClient()
+    const tokens = rawCapabilities
+      .split(',')
+      .map((token) => token.trim())
+      .filter(Boolean)
+
+    if (tokens.length === 0 || tokens.length > MAX_CAPABILITY_TOKENS) {
+      return legacyClient()
+    }
+
+    for (const token of tokens) {
+      if (!CAPABILITY_TOKEN_RE.test(token)) return legacyClient()
+      capabilities.add(token)
+    }
+
+    if (capabilities.size === 0) return legacyClient()
   }
 
-  for (const token of tokens) {
-    if (!CAPABILITY_TOKEN_RE.test(token)) return legacyClient()
-    capabilities.add(token)
-  }
+  if (appBuild == null && capabilities.size === 0) return legacyClient()
 
   return { appBuild, capabilities }
 }

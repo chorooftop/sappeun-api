@@ -6,7 +6,8 @@
 프로젝트:  wtptvgxyqkqqsfkdsoox (리전: ap-south-1)
 정식 덤프: supabase/migrations/0001_remote_baseline.sql (초기화 기준 schema-only baseline, 1150줄)
 진단 도구: scripts/introspect-schema.mjs(REST), scripts/introspect.sql(psql)
-최신 migration: 0013_client_capability_gate.sql
+최신 운영 적용 migration: 0013_client_capability_gate.sql
+대기 중 migration: 0014_bingo_mission_expansion.sql (assets.sappeun.app custom domain gate 이후 적용)
 ```
 
 > **Phase 0 완료.** 컬럼·타입·RLS·FK·CHECK·트리거까지 전부 실측 확정.
@@ -44,6 +45,14 @@
 > (`min_app_build`, `required_capabilities`, `active_from`, `active_until`)을 추가한다. API는
 > `X-Sappeun-App-Build`, `X-Sappeun-Client-Capabilities` 헤더를 파싱해 legacy client에는
 > gated row를 숨긴다.
+>
+> **0014 준비 완료 / 운영 적용 대기 (2026-06-08).** frontend plan
+> `plans/bingo-mission-expansion-candidates.md` 기준 신규 미션 102개를 별도 seed로 추가한다.
+> 모든 신규 `mission_content`/`mission_badges` row는 `runtime-artwork-v1` capability로 gate하고,
+> color 확장 row는 `swatch-hex-v1`도 요구한다. Pencil `design_v2.pen` export 이미지는
+> `artifacts/mission-artwork/v1.4-pencil-export/manifest.json`의 해시 기반 `remoteImage` URL과
+> fallback ArtworkSpec으로 연결된다. `assets.sappeun.app` custom domain 공개 접근 검증 전까지
+> 운영 DB에는 적용하지 않는다.
 
 ---
 
@@ -120,7 +129,7 @@ mission_badges, board_badges, user_badges` *(0006 추가)*
   (향후 table SELECT grant를 열 때 적용; backend API는 service_role으로 RLS 우회).
 - 47개 시드 (`api-migration-v1`, sheet.json v1.3.0). 제외: `id='free'` (category='special', 중앙 free 슬롯).
 
-### mission_content / mission_categories *(0010, 0012, 0013)*
+### mission_content / mission_categories *(0010, 0012, 0013; 0014 pending)*
 
 | 컬럼 | 타입 | NULL | 비고 |
 |---|---|---|---|
@@ -140,6 +149,8 @@ mission_badges, board_badges, user_badges` *(0006 추가)*
 | active | boolean | NO | true default |
 
 - `mission_content.artwork`가 미션 기본 시각 core의 정본이다.
+- 0014 pending 신규 102개 row는 `remoteImage` artwork와 fallback을 함께 가진다. 실제 public R2
+  업로드 대상은 `artifacts/mission-artwork/v1.4-pencil-export/manifest.json`의 `objectKey`.
 - active row는 API service-role query 후 client capability/window 필터를 거쳐 반환된다.
 - Verification query: `select count(*) from public.mission_content where active = true and artwork is null;`
   expected `0` after 0012 backfill.
