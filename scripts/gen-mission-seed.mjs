@@ -48,6 +48,7 @@ const CONTENT_COLUMNS = [
   'swatch_label',
   'no_photo',
   'fixed_position',
+  'awards_badge',
   'sort_order',
   'active',
 ];
@@ -72,7 +73,12 @@ function sqlLiteral(column, value) {
   if (value === undefined || value === null) {
     return 'null';
   }
-  if (column === 'text_only' || column === 'no_photo' || column === 'active') {
+  if (
+    column === 'text_only' ||
+    column === 'no_photo' ||
+    column === 'awards_badge' ||
+    column === 'active'
+  ) {
     return value ? 'true' : 'false';
   }
   if (column === 'font_size' || column === 'sort_order') {
@@ -106,6 +112,7 @@ function buildContentRow(cell, index) {
     swatch_label: normalized.swatch_label ?? null,
     no_photo: normalized.no_photo ?? null,
     fixed_position: normalized.fixed_position ?? null,
+    awards_badge: normalized.category !== 'special' && cell.id !== 'free',
     sort_order: index * 10,
     active: true,
   };
@@ -121,9 +128,6 @@ function buildCategoryRow(key, info) {
     info.tone === undefined || info.tone === null
       ? 'null'
       : sqlString(info.tone),
-    info.count === undefined || info.count === null
-      ? 'null'
-      : String(info.count),
   ];
 }
 
@@ -184,7 +188,7 @@ function generate() {
     .map((c) => `      ${c} = excluded.${c}`)
     .join(',\n');
 
-  const categoryUpdateSet = ['label', 'tone', 'count']
+  const categoryUpdateSet = ['label', 'tone']
     .map((c) => `      ${c} = excluded.${c}`)
     .join(',\n');
 
@@ -196,8 +200,7 @@ function generate() {
 --
 -- Mission CONTENT master tables (mission_content + mission_categories) for the
 -- DB-as-single-source migration (plans/mission-content-db-migration.md Phase 1/2).
--- catalog_version = '${CATALOG_VERSION}' (shared natural key with mission_badges;
--- both seeded from the same source so identity columns stay in sync in v1).
+-- catalog_version = '${CATALOG_VERSION}'.
 --
 -- Style matches 0006/0009: lowercase SQL, do-block constraint/policy guards,
 -- RLS revoke/grant, on conflict do update, idempotent.
@@ -208,6 +211,7 @@ function generate() {
 -- swatchLabel -> swatch_label, textOnly -> text_only, fontSize -> font_size,
 -- noPhoto -> no_photo, fixedPosition -> fixed_position). icon absent/null -> null.
 -- swatch stores the color NAME only (no hex). difficulty absent -> null.
+-- awards_badge is false only for the free/special center cell.
 
 -- ---------------------------------------------------------------------------
 -- 1. mission_content
@@ -231,6 +235,7 @@ create table if not exists public.mission_content (
   swatch_label text,
   no_photo boolean,
   fixed_position text,
+  awards_badge boolean not null default true,
   sort_order integer not null default 0,
   active boolean not null default true,
   created_at timestamptz not null default now(),
@@ -272,7 +277,6 @@ create table if not exists public.mission_categories (
   key text not null,
   label text not null,
   tone text,
-  count integer,
   created_at timestamptz not null default now(),
   primary key (catalog_version, key)
 );
@@ -343,7 +347,7 @@ ${contentUpdateSet};
 -- ---------------------------------------------------------------------------
 
 insert into public.mission_categories (
-  catalog_version, key, label, tone, count
+  catalog_version, key, label, tone
 )
 values
 ${categoryValues}

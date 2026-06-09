@@ -48,7 +48,7 @@ function contentRow(overrides: Record<string, unknown> = {}) {
     capture_label: null,
     icon: 'flower-2',
     variant: 'QeQCU',
-    difficulty: null,
+    difficulty: 'easy',
     camera: null,
     text_only: null,
     font_size: null,
@@ -135,6 +135,7 @@ describe('MissionsService.getMissionContent', () => {
       hint: '길가에서 꽃을 찾아요',
       icon: 'flower-2',
       variant: 'QeQCU',
+      difficulty: 'easy',
     })
 
     expect(result.cells[1]).toEqual({
@@ -147,6 +148,7 @@ describe('MissionsService.getMissionContent', () => {
       variant: 'QeQCU',
       textOnly: true,
       fontSize: 34,
+      difficulty: 'easy',
     })
 
     expect(result.cells[2]).toMatchObject({

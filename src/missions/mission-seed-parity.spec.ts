@@ -26,10 +26,6 @@ const SQL_PATH = resolve(
   repoRoot,
   'supabase/migrations/0010_mission_content.sql',
 )
-const BADGE_SQL_PATH = resolve(
-  repoRoot,
-  'supabase/migrations/0006_bingo_editable_badges.sql',
-)
 
 type Sheet = {
   version: string
@@ -43,7 +39,6 @@ type Sheet = {
 
 const sheet: Sheet = JSON.parse(readFileSync(SOURCE_PATH, 'utf8'))
 const sql = readFileSync(SQL_PATH, 'utf8')
-const badgeSql = readFileSync(BADGE_SQL_PATH, 'utf8')
 
 /**
  * Extract the parenthesized tuple rows from the `values ... ` block of a named
@@ -173,18 +168,6 @@ function unquoteSqlLiteral(value: string): string {
   return value.slice(1, -1).replace(/''/g, "'")
 }
 
-function readSeededBadgeMissionIds(): Set<string> {
-  const ids = new Set<string>()
-  const regex = /'mission:([a-z0-9]+):v1'\s*,\s*'([a-z0-9]+)'/g
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(badgeSql)) !== null) {
-    const [, idFromBadgeId, missionId] = match
-    expect(idFromBadgeId).toBe(missionId)
-    ids.add(missionId)
-  }
-  return ids
-}
-
 describe('mission seed parity (sheet.source.json <-> 0010_mission_content.sql)', () => {
   it('emits one mission_content row per sheet cell (48) and one category row per category (7)', () => {
     expect(sheet.cells).toHaveLength(48)
@@ -217,20 +200,19 @@ describe('mission seed parity (sheet.source.json <-> 0010_mission_content.sql)',
     }
   })
 
-  it('backs every seeded mission_badges row with mission_content and keeps FREE badge-less', () => {
-    const contentMissionIds = new Set(
+  it('marks every official mission as awardable and keeps FREE badge-less', () => {
+    const awardableMissionIds = new Set(
+      sqlContentRows
+        .filter((row) => col(row, 'awards_badge') === 'true')
+        .map((row) => unquoteSqlLiteral(col(row, 'mission_id'))),
+    )
+    const allMissionIds = new Set(
       sqlContentRows.map((row) => unquoteSqlLiteral(col(row, 'mission_id'))),
     )
-    const badgeMissionIds = readSeededBadgeMissionIds()
 
-    expect(badgeMissionIds.size).toBe(47)
-    expect(badgeMissionIds.has('free')).toBe(false)
-
-    const missingContent = [...badgeMissionIds].filter(
-      (missionId) => !contentMissionIds.has(missionId),
-    )
-    expect(missingContent).toEqual([])
-    expect(contentMissionIds.has('free')).toBe(true)
+    expect(awardableMissionIds.size).toBe(47)
+    expect(awardableMissionIds.has('free')).toBe(false)
+    expect(allMissionIds.has('free')).toBe(true)
   })
 
   it('maps the FREE cell (special, fixed center, rAdyJ variant)', () => {
@@ -280,29 +262,26 @@ describe('mission seed parity (sheet.source.json <-> 0010_mission_content.sql)',
     expect(col(findContentRow('c08'), 'icon')).toBe('null')
   })
 
-  it('maps mission_categories label/tone/count for representative keys', () => {
+  it('maps mission_categories label/tone for representative keys', () => {
     const byKey = new Map(sqlCategoryRows.map((r) => [r[1], r]))
-    // category tuple order: catalog_version, key, label, tone, count
+    // category tuple order: catalog_version, key, label, tone
     expect(byKey.get("'self'")).toEqual([
       `'${CATALOG_VERSION}'`,
       "'self'",
       "'셀프'",
       "'cat-self'",
-      '9',
     ])
     expect(byKey.get("'color'")).toEqual([
       `'${CATALOG_VERSION}'`,
       "'color'",
       "'색깔'",
       "'cat-color'",
-      '8',
     ])
     expect(byKey.get("'special'")).toEqual([
       `'${CATALOG_VERSION}'`,
       "'special'",
       "'특수'",
       "'brand-accent'",
-      '1',
     ])
   })
 

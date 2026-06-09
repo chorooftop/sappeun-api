@@ -1,7 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { describe, expect, it } from 'vitest'
 
 import { BadgesService } from '@/badges/badges.service'
@@ -76,34 +72,26 @@ function makeService(admin: ReturnType<typeof makeAdmin>): BadgesService {
   return new BadgesService({ adminClient: admin } as never)
 }
 
-function expectMissionBadgeSelectUsesContentJoin(select: string) {
-  expect(select).toContain(
-    'mission_content!mission_badges_mission_content_fkey(label, category, difficulty, artwork, active, min_app_build, required_capabilities, active_from, active_until)',
-  )
-
-  const withoutContentJoin = select.replace(
-    /mission_content![^(]+\([^)]*\)/g,
-    '',
-  )
-  expect(withoutContentJoin).not.toMatch(/\b(title|category|difficulty)\b/)
+function expectMissionContentSelect(select: string) {
+  expect(select).toContain('mission_id')
+  expect(select).toContain('awards_badge')
+  expect(select).toContain('artwork')
+  expect(select).not.toContain('grade_label')
+  expect(select).not.toContain('grade_color')
+  expect(select).not.toContain('artwork_key')
 }
 
 function catalogRow(
   overrides: Partial<{
-    id: string
     mission_id: string
     catalog_version: string
     title: string
-    category: string | null
+    category: string
     difficulty: string
-    grade_label: string
-    grade_color: string
-    artwork_key: string | null
     artwork: unknown
-    content_artwork: unknown
+    awards_badge: boolean
     sort_order: number
     active: boolean
-    content_active: boolean
     min_app_build: number | null
     required_capabilities: string[]
     active_from: string | null
@@ -111,36 +99,25 @@ function catalogRow(
   }> = {},
 ) {
   return {
-    id: overrides.id ?? 'mission:n01:v1',
     mission_id: overrides.mission_id ?? 'n01',
     catalog_version: overrides.catalog_version ?? 'api-migration-v1',
-    grade_label: overrides.grade_label ?? '일상 배지',
-    grade_color: overrides.grade_color ?? '#6ED6A0',
-    artwork_key: overrides.artwork_key ?? 'mission/n01',
+    label: overrides.title ?? '꽃',
+    category: overrides.category ?? 'nature',
+    difficulty: overrides.difficulty ?? 'easy',
     artwork: overrides.artwork ?? null,
+    awards_badge: overrides.awards_badge ?? true,
     sort_order: overrides.sort_order ?? 10,
     active: overrides.active ?? true,
     min_app_build: overrides.min_app_build ?? null,
     required_capabilities: overrides.required_capabilities ?? [],
     active_from: overrides.active_from ?? null,
     active_until: overrides.active_until ?? null,
-    mission_content: {
-      label: overrides.title ?? '꽃',
-      category: overrides.category ?? 'nature',
-      difficulty: overrides.difficulty ?? 'easy',
-      artwork: overrides.content_artwork ?? null,
-      active: overrides.content_active ?? true,
-      min_app_build: overrides.min_app_build ?? null,
-      required_capabilities: overrides.required_capabilities ?? [],
-      active_from: overrides.active_from ?? null,
-      active_until: overrides.active_until ?? null,
-    },
   }
 }
 
 function userBadgeRow(
   overrides: Partial<{
-    badge_id: string
+    mission_id: string
     earned_count: number
     first_earned_at: string
     last_earned_at: string
@@ -150,7 +127,8 @@ function userBadgeRow(
 ) {
   return {
     user_id: 'user-1',
-    badge_id: overrides.badge_id ?? 'mission:n01:v1',
+    mission_id: overrides.mission_id ?? 'n01',
+    earned_catalog_version: 'api-migration-v1',
     first_board_id: overrides.first_board_id ?? 'board-1',
     last_board_id: overrides.last_board_id ?? 'board-1',
     first_earned_at: overrides.first_earned_at ?? '2026-06-03T00:00:00.000Z',
@@ -213,21 +191,17 @@ function eligibleCells(): BoardCellRow[] {
 }
 
 describe('BadgesService.listCatalog', () => {
-  it('maps mission_badges rows to the catalog response shape', async () => {
+  it('maps mission_content rows to the catalog response shape', async () => {
     const admin = makeAdmin({
-      mission_badges: [
+      mission_content: [
         {
           data: [
             catalogRow(),
             catalogRow({
-              id: 'mission:sf06:v1',
               mission_id: 'sf06',
               title: '내 그림자',
               category: 'self',
               difficulty: 'medium',
-              grade_label: '도전 배지',
-              grade_color: '#F5A623',
-              artwork_key: 'mission/sf06',
               sort_order: 360,
             }),
           ],
@@ -240,7 +214,7 @@ describe('BadgesService.listCatalog', () => {
 
     expect(result).toEqual([
       expect.objectContaining({
-        badgeId: 'mission:n01:v1',
+        badgeId: 'n01',
         missionId: 'n01',
         catalogVersion: 'api-migration-v1',
         title: '꽃',
@@ -248,45 +222,28 @@ describe('BadgesService.listCatalog', () => {
         difficulty: 'easy',
         gradeLabel: '일상 배지',
         gradeColor: '#6ED6A0',
-        artworkKey: 'mission/n01',
         sortOrder: 10,
       }),
       expect.objectContaining({
-        badgeId: 'mission:sf06:v1',
+        badgeId: 'sf06',
         difficulty: 'medium',
+        gradeLabel: '도전 배지',
         gradeColor: '#F5A623',
       }),
     ])
+    expect(result[0]).not.toHaveProperty('artworkKey')
   })
 
-  it('uses badge artwork override before mission content artwork fallback', async () => {
-    const fallbackArtwork = {
+  it('uses mission_content artwork directly', async () => {
+    const artwork = {
       schemaVersion: 1,
       type: 'lucide',
       key: 'flower-2',
     }
-    const overrideArtwork = {
-      schemaVersion: 1,
-      type: 'text',
-      label: '꽃',
-      fontSize: 24,
-    }
     const admin = makeAdmin({
-      mission_badges: [
+      mission_content: [
         {
-          data: [
-            catalogRow({
-              id: 'mission:n01:v1',
-              artwork: null,
-              content_artwork: fallbackArtwork,
-            }),
-            catalogRow({
-              id: 'mission:n02:v1',
-              mission_id: 'n02',
-              artwork: overrideArtwork,
-              content_artwork: fallbackArtwork,
-            }),
-          ],
+          data: [catalogRow({ artwork })],
           error: null,
         },
       ],
@@ -294,63 +251,37 @@ describe('BadgesService.listCatalog', () => {
 
     const result = await makeService(admin).listCatalog()
 
-    expect(result[0]).toMatchObject({ artwork: fallbackArtwork })
-    expect(result[1]).toMatchObject({ artwork: overrideArtwork })
+    expect(result[0]).toMatchObject({ artwork })
   })
 
   it('filters gated catalog rows for legacy clients', async () => {
-    const admin = makeAdmin({
-      mission_badges: [
-        {
-          data: [
-            catalogRow({ id: 'mission:n01:v1', mission_id: 'n01' }),
-            catalogRow({
-              id: 'mission:new:v1',
-              mission_id: 'new',
-              required_capabilities: ['runtime-artwork-v1'],
-              min_app_build: 202606080001,
-            }),
-          ],
-          error: null,
-        },
-      ],
-    })
+    const rows = [
+      catalogRow({ mission_id: 'n01' }),
+      catalogRow({
+        mission_id: 'new',
+        required_capabilities: ['runtime-artwork-v1'],
+        min_app_build: 202606080001,
+      }),
+    ]
+    const legacy = await makeService(
+      makeAdmin({ mission_content: [{ data: rows, error: null }] }),
+    ).listCatalog()
+    expect(legacy.map((badge) => badge.badgeId)).toEqual(['n01'])
 
-    const legacy = await makeService(admin).listCatalog()
-    expect(legacy.map((badge) => badge.badgeId)).toEqual(['mission:n01:v1'])
-
-    const runtimeAdmin = makeAdmin({
-      mission_badges: [
-        {
-          data: [
-            catalogRow({ id: 'mission:n01:v1', mission_id: 'n01' }),
-            catalogRow({
-              id: 'mission:new:v1',
-              mission_id: 'new',
-              required_capabilities: ['runtime-artwork-v1'],
-              min_app_build: 202606080001,
-            }),
-          ],
-          error: null,
-        },
-      ],
-    })
-
-    const runtime = await makeService(runtimeAdmin).listCatalog({
+    const runtime = await makeService(
+      makeAdmin({ mission_content: [{ data: rows, error: null }] }),
+    ).listCatalog({
       appBuild: 202606080001,
       capabilities: new Set(['runtime-artwork-v1']),
     })
-    expect(runtime.map((badge) => badge.badgeId)).toEqual([
-      'mission:n01:v1',
-      'mission:new:v1',
-    ])
+    expect(runtime.map((badge) => badge.badgeId)).toEqual(['n01', 'new'])
   })
 
-  it('scopes the catalog query to the active catalog version', async () => {
+  it('scopes the catalog query to active awardable mission_content', async () => {
     const eqCalls: Record<string, EqCall[]> = {}
     const selectCalls: Record<string, SelectCall[]> = {}
     const admin = makeAdmin(
-      { mission_badges: [{ data: [catalogRow()], error: null }] },
+      { mission_content: [{ data: [catalogRow()], error: null }] },
       undefined,
       eqCalls,
       selectCalls,
@@ -358,54 +289,40 @@ describe('BadgesService.listCatalog', () => {
 
     await makeService(admin).listCatalog()
 
-    expect(eqCalls.mission_badges).toContainEqual({
+    expect(eqCalls.mission_content).toContainEqual({
       column: 'catalog_version',
       value: 'api-migration-v1',
     })
-    expect(eqCalls.mission_badges).toContainEqual({
+    expect(eqCalls.mission_content).toContainEqual({
       column: 'active',
       value: true,
     })
-    expectMissionBadgeSelectUsesContentJoin(
-      selectCalls.mission_badges[0].columns,
-    )
+    expect(eqCalls.mission_content).toContainEqual({
+      column: 'awards_badge',
+      value: true,
+    })
+    expectMissionContentSelect(selectCalls.mission_content[0].columns)
   })
 })
 
 describe('BadgesService.listUserBadges', () => {
   function catalogFixture() {
     return [
-      catalogRow({
-        id: 'mission:n01:v1',
-        mission_id: 'n01',
-        difficulty: 'easy',
-      }),
-      catalogRow({
-        id: 'mission:n02:v1',
-        mission_id: 'n02',
-        difficulty: 'easy',
-      }),
-      catalogRow({
-        id: 'mission:sf06:v1',
-        mission_id: 'sf06',
-        difficulty: 'medium',
-      }),
-      catalogRow({
-        id: 'mission:hard:v1',
-        mission_id: 'hard',
-        difficulty: 'hard',
-      }),
+      catalogRow({ mission_id: 'n01', difficulty: 'easy' }),
+      catalogRow({ mission_id: 'n02', difficulty: 'easy' }),
+      catalogRow({ mission_id: 'sf06', difficulty: 'medium' }),
+      catalogRow({ mission_id: 'hard', difficulty: 'hard' }),
     ]
   }
 
   it('computes summary counts and respects difficulty + status filters', async () => {
     const admin = makeAdmin({
-      mission_badges: [{ data: catalogFixture(), error: null }],
+      mission_content: [{ data: catalogFixture(), error: null }],
       user_badges: [
         {
           data: [
-            userBadgeRow({ badge_id: 'mission:n01:v1', earned_count: 2 }),
-            userBadgeRow({ badge_id: 'mission:sf06:v1', earned_count: 1 }),
+            userBadgeRow({ mission_id: 'n01', earned_count: 2 }),
+            userBadgeRow({ mission_id: 'sf06', earned_count: 1 }),
           ],
           error: null,
         },
@@ -429,12 +346,12 @@ describe('BadgesService.listUserBadges', () => {
 
   it('filters to earned easy badges only', async () => {
     const admin = makeAdmin({
-      mission_badges: [{ data: catalogFixture(), error: null }],
+      mission_content: [{ data: catalogFixture(), error: null }],
       user_badges: [
         {
           data: [
-            userBadgeRow({ badge_id: 'mission:n01:v1', earned_count: 2 }),
-            userBadgeRow({ badge_id: 'mission:sf06:v1', earned_count: 1 }),
+            userBadgeRow({ mission_id: 'n01', earned_count: 2 }),
+            userBadgeRow({ mission_id: 'sf06', earned_count: 1 }),
           ],
           error: null,
         },
@@ -448,22 +365,21 @@ describe('BadgesService.listUserBadges', () => {
 
     expect(result.badges).toEqual([
       expect.objectContaining({
-        badgeId: 'mission:n01:v1',
+        badgeId: 'n01',
         earned: true,
         earnedCount: 2,
       }),
     ])
-    // Summary is over the whole catalog, not the filtered slice.
     expect(result.summary.totalCount).toBe(4)
     expect(result.summary.earnedCount).toBe(2)
   })
 
   it('filters to locked badges only', async () => {
     const admin = makeAdmin({
-      mission_badges: [{ data: catalogFixture(), error: null }],
+      mission_content: [{ data: catalogFixture(), error: null }],
       user_badges: [
         {
-          data: [userBadgeRow({ badge_id: 'mission:n01:v1', earned_count: 1 })],
+          data: [userBadgeRow({ mission_id: 'n01', earned_count: 1 })],
           error: null,
         },
       ],
@@ -475,9 +391,9 @@ describe('BadgesService.listUserBadges', () => {
     })
 
     expect(result.badges.map((badge) => badge.badgeId)).toEqual([
-      'mission:n02:v1',
-      'mission:sf06:v1',
-      'mission:hard:v1',
+      'n02',
+      'sf06',
+      'hard',
     ])
     expect(result.badges.every((badge) => badge.earned === false)).toBe(true)
   })
@@ -486,11 +402,11 @@ describe('BadgesService.listUserBadges', () => {
 describe('BadgesService.getUserBadgeDetail', () => {
   it('returns an earned badge with its user collection data', async () => {
     const admin = makeAdmin({
-      mission_badges: [{ data: catalogRow(), error: null }],
+      mission_content: [{ data: catalogRow(), error: null }],
       user_badges: [
         {
           data: userBadgeRow({
-            badge_id: 'mission:n01:v1',
+            mission_id: 'n01',
             earned_count: 2,
             first_board_id: 'board-first',
             last_board_id: 'board-last',
@@ -502,19 +418,15 @@ describe('BadgesService.getUserBadgeDetail', () => {
       ],
     })
 
-    const result = await makeService(admin).getUserBadgeDetail(
-      'user-1',
-      'mission:n01:v1',
-    )
+    const result = await makeService(admin).getUserBadgeDetail('user-1', 'n01')
 
     expect(result).toEqual(
       expect.objectContaining({
-        badgeId: 'mission:n01:v1',
+        badgeId: 'n01',
         earned: true,
         earnedCount: 2,
         firstEarnedAt: '2026-06-01T00:00:00.000Z',
         lastEarnedAt: '2026-06-03T00:00:00.000Z',
-        // sourceBoardId is unified with the list endpoint: most recent board.
         sourceBoardId: 'board-last',
       }),
     )
@@ -522,18 +434,15 @@ describe('BadgesService.getUserBadgeDetail', () => {
 
   it('returns a locked badge when the user has not earned it', async () => {
     const admin = makeAdmin({
-      mission_badges: [{ data: catalogRow(), error: null }],
+      mission_content: [{ data: catalogRow(), error: null }],
       user_badges: [{ data: null, error: null }],
     })
 
-    const result = await makeService(admin).getUserBadgeDetail(
-      'user-1',
-      'mission:n01:v1',
-    )
+    const result = await makeService(admin).getUserBadgeDetail('user-1', 'n01')
 
     expect(result).toEqual(
       expect.objectContaining({
-        badgeId: 'mission:n01:v1',
+        badgeId: 'n01',
         earned: false,
         earnedCount: 0,
         sourceBoardId: null,
@@ -543,13 +452,13 @@ describe('BadgesService.getUserBadgeDetail', () => {
 })
 
 describe('BadgesService.awardBoardBadges', () => {
-  it('collects official mission badge ids, calls the RPC, and maps the result', async () => {
+  it('collects official mission ids, calls the RPC, and maps the result', async () => {
     const selectCalls: Record<string, SelectCall[]> = {}
     const rpc = {
       result: {
         data: [
-          { badge_id: 'mission:m00:v1', is_first_earn: true },
-          { badge_id: 'mission:m01:v1', is_first_earn: false },
+          { badge_id: 'm00', is_first_earn: true },
+          { badge_id: 'm01', is_first_earn: false },
         ],
         error: null,
       },
@@ -557,33 +466,19 @@ describe('BadgesService.awardBoardBadges', () => {
     }
     const admin = makeAdmin(
       {
-        mission_badges: [
+        mission_content: [
           {
             data: [
-              {
-                id: 'mission:m00:v1',
+              catalogRow({
                 mission_id: 'm00',
-                grade_color: '#6ED6A0',
-                grade_label: '일상 배지',
-                active: true,
-                mission_content: {
-                  label: '꽃',
-                  category: 'nature',
-                  difficulty: 'easy',
-                },
-              },
-              {
-                id: 'mission:m01:v1',
+                title: '꽃',
+                difficulty: 'easy',
+              }),
+              catalogRow({
                 mission_id: 'm01',
-                grade_color: '#F5A623',
-                grade_label: '도전 배지',
-                active: true,
-                mission_content: {
-                  label: '나뭇잎',
-                  category: 'nature',
-                  difficulty: 'medium',
-                },
-              },
+                title: '나뭇잎',
+                difficulty: 'medium',
+              }),
             ],
             error: null,
           },
@@ -594,7 +489,6 @@ describe('BadgesService.awardBoardBadges', () => {
       selectCalls,
     )
 
-    // Free position (4) is excluded from minting; remaining 8 cells map to badges.
     const result = await makeService(admin).awardBoardBadges({
       userId: 'user-1',
       board: board(),
@@ -607,30 +501,24 @@ describe('BadgesService.awardBoardBadges', () => {
       args: expect.objectContaining({
         p_user_id: 'user-1',
         p_board_id: 'board-1',
-        p_badge_ids: expect.arrayContaining([
-          'mission:m00:v1',
-          'mission:m01:v1',
-        ]),
+        p_badge_ids: expect.arrayContaining(['m00', 'm01']),
       }),
     })
-    // Free cell (m04) must not be among the badge ids.
     const args = (rpc.calls[0] as { args: { p_badge_ids: string[] } }).args
-    expect(args.p_badge_ids).not.toContain('mission:m04:v1')
+    expect(args.p_badge_ids).not.toContain('m04')
 
     expect(result.badgeEligible).toBe(true)
     expect(result.badgeCount).toBe(2)
-    expectMissionBadgeSelectUsesContentJoin(
-      selectCalls.mission_badges[0].columns,
-    )
+    expectMissionContentSelect(selectCalls.mission_content[0].columns)
     expect(result.earnedBadges).toEqual([
       expect.objectContaining({
-        badgeId: 'mission:m00:v1',
+        badgeId: 'm00',
         difficulty: 'easy',
         gradeColor: '#6ED6A0',
         isFirstEarn: true,
       }),
       expect.objectContaining({
-        badgeId: 'mission:m01:v1',
+        badgeId: 'm01',
         difficulty: 'medium',
         gradeColor: '#F5A623',
         isFirstEarn: false,
@@ -703,51 +591,28 @@ describe('BadgesService.awardBoardBadges', () => {
     expect(result.badgeEligible).toBe(false)
   })
 
-  // CORR-4 / M2 — cross-board concurrency contract test.
-  //
-  // This repo has no Postgres integration harness (the service is unit-tested
-  // against a mocked admin client + mocked rpc). We therefore assert the RPC
-  // *contract* that guarantees earned_count == 2 when two distinct official
-  // boards owned by the same user share a mission id: each board issues its own
-  // independent `award_board_badges` rpc invocation carrying the shared badge id.
-  //
-  // The atomic increment itself (`earned_count = user_badges.earned_count + 1`,
-  // chained data-modifying CTE with on-conflict) is enforced DB-side by the
-  // RPC SQL in supabase/migrations/0006_bingo_editable_badges.sql §7 — two
-  // sequential/concurrent invocations each flow exactly one new board_badges
-  // row into the user_badges rollup, so the post-update earned_count is 2.
   it('issues one RPC per board for the shared mission id (cross-board contract)', async () => {
     const rpc = {
       result: {
-        data: [{ badge_id: 'mission:m00:v1', is_first_earn: true }],
+        data: [{ badge_id: 'm00', is_first_earn: true }],
         error: null,
       },
       calls: [] as unknown[],
     }
     const sharedCatalog = {
       data: [
-        {
-          id: 'mission:m00:v1',
+        catalogRow({
           mission_id: 'm00',
-          grade_color: '#6ED6A0',
-          grade_label: '일상 배지',
-          active: true,
-          mission_content: {
-            label: '꽃',
-            category: 'nature',
-            difficulty: 'easy',
-          },
-        },
+          title: '꽃',
+          difficulty: 'easy',
+        }),
       ],
       error: null,
     }
-    // Two boards, each a single official mission cell with the SAME mission id
-    // (plus the free center) — fully completed, unedited.
     const sharedBoard = (id: string): BoardRow =>
       board({ id, cell_ids: ['m00'], free_position: 1, mode: '3x3' })
     const sharedCells = (boardId: string): BoardCellRow[] => [
       missionCell(0, { board_id: boardId, cell_id: 'm00' }),
-      // free position
       missionCell(1, {
         board_id: boardId,
         cell_id: 'm01',
@@ -757,7 +622,7 @@ describe('BadgesService.awardBoardBadges', () => {
     ]
     const admin = makeAdmin(
       {
-        mission_badges: [sharedCatalog, sharedCatalog],
+        mission_content: [sharedCatalog, sharedCatalog],
       },
       rpc,
     )
@@ -774,16 +639,13 @@ describe('BadgesService.awardBoardBadges', () => {
       cells: sharedCells('board-b'),
     })
 
-    // Two independent RPC invocations, one per board, both carrying the shared
-    // badge id. DB-side atomic increment (migration 0006 §7) makes the
-    // resulting user_badges.earned_count == 2.
     expect(rpc.calls).toHaveLength(2)
     const boardIds = (rpc.calls as { args: { p_board_id: string } }[]).map(
       (call) => call.args.p_board_id,
     )
     expect(boardIds).toEqual(['board-a', 'board-b'])
     for (const call of rpc.calls as { args: { p_badge_ids: string[] } }[]) {
-      expect(call.args.p_badge_ids).toContain('mission:m00:v1')
+      expect(call.args.p_badge_ids).toContain('m00')
     }
   })
 })
@@ -802,7 +664,7 @@ describe('BadgesService.getBoardBadges', () => {
           data: [
             {
               board_id: 'board-1',
-              badge_id: 'mission:n01:v1',
+              mission_id: 'n01',
               user_id: 'user-1',
               earned_at: '2026-06-03T00:30:00.000Z',
             },
@@ -810,7 +672,7 @@ describe('BadgesService.getBoardBadges', () => {
           error: null,
         },
       ],
-      mission_badges: [{ data: [catalogRow()], error: null }],
+      mission_content: [{ data: [catalogRow()], error: null }],
     })
 
     const result = await makeService(admin).getBoardBadges('user-1', [
@@ -819,78 +681,11 @@ describe('BadgesService.getBoardBadges', () => {
 
     expect(result.get('board-1')).toEqual([
       expect.objectContaining({
-        badgeId: 'mission:n01:v1',
+        badgeId: 'n01',
         missionId: 'n01',
         difficulty: 'easy',
         gradeColor: '#6ED6A0',
       }),
     ])
-  })
-})
-
-// Seed coverage guard (CORR-10): every non-free official mission id present in
-// the frontend sheet.json must have a corresponding seed row in migration 0006.
-// This protects against catalog drift that would silently drop official badges.
-describe('badge catalog seed coverage', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const repoRoot = resolve(here, '..', '..')
-  // Cross-repo authoritative mission catalog. Present locally (sibling repo),
-  // may be absent in CI — skip the drift guard there rather than fail on ENOENT.
-  const sheetPath = resolve(
-    repoRoot,
-    '..',
-    'sappeun-frontend',
-    'apps',
-    'mobile',
-    'assets',
-    'data',
-    'sheet.json',
-  )
-  const sheetAvailable = existsSync(sheetPath)
-
-  function readMissionIdsFromSheet(): string[] {
-    const sheet = JSON.parse(readFileSync(sheetPath, 'utf8')) as {
-      cells: { id: string; category?: string }[]
-    }
-    return sheet.cells
-      .filter((cell) => cell.id !== 'free' && cell.category !== 'special')
-      .map((cell) => cell.id)
-  }
-
-  function readSeededMissionIds(): Set<string> {
-    const migrationPath = resolve(
-      repoRoot,
-      'supabase',
-      'migrations',
-      '0006_bingo_editable_badges.sql',
-    )
-    const sql = readFileSync(migrationPath, 'utf8')
-    const ids = new Set<string>()
-    // badge id format: mission:<id>:v1
-    const regex = /'mission:([a-z0-9]+):v1'/g
-    let match: RegExpExecArray | null
-    while ((match = regex.exec(sql)) !== null) {
-      ids.add(match[1])
-    }
-    return ids
-  }
-
-  it.skipIf(!sheetAvailable)(
-    'seeds every official mission id from sheet.json (47 missions, free excluded)',
-    () => {
-      const missionIds = readMissionIdsFromSheet()
-      const seeded = readSeededMissionIds()
-
-      expect(missionIds).toHaveLength(47)
-      expect(missionIds).not.toContain('free')
-
-      const missing = missionIds.filter((id) => !seeded.has(id))
-      expect(missing).toEqual([])
-    },
-  )
-
-  it('does not seed a badge for the free cell', () => {
-    const seeded = readSeededMissionIds()
-    expect(seeded.has('free')).toBe(false)
   })
 })

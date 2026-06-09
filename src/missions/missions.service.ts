@@ -23,7 +23,7 @@ import { SupabaseService } from '@/supabase/supabase.service'
 const MISSION_CONTENT_SELECT =
   'mission_id, label, category, hint, caption, capture_label, icon, variant, difficulty, camera, text_only, font_size, swatch, swatch_label, no_photo, fixed_position, artwork, min_app_build, required_capabilities, active_from, active_until, sort_order'
 
-const MISSION_CATEGORY_SELECT = 'key, label, tone, count'
+const MISSION_CATEGORY_SELECT = 'key, label, tone'
 
 interface MissionContentRow extends CapabilityGatedRow {
   mission_id: string
@@ -34,7 +34,7 @@ interface MissionContentRow extends CapabilityGatedRow {
   capture_label: string | null
   icon: string | null
   variant: string
-  difficulty: string | null
+  difficulty: string
   camera: string | null
   text_only: boolean | null
   font_size: number | null
@@ -50,7 +50,6 @@ interface MissionCategoryRow {
   key: string
   label: string
   tone: string | null
-  count: number | null
 }
 
 function toMissionCell(row: MissionContentRow): MissionCell {
@@ -71,7 +70,7 @@ function toMissionCell(row: MissionContentRow): MissionCell {
     ...(row.swatch != null ? { swatch: row.swatch } : {}),
     ...(row.swatch_label != null ? { swatchLabel: row.swatch_label } : {}),
     ...(row.camera != null ? { camera: row.camera } : {}),
-    ...(row.difficulty != null ? { difficulty: row.difficulty } : {}),
+    difficulty: row.difficulty,
     ...(row.no_photo != null ? { noPhoto: row.no_photo } : {}),
     ...(row.fixed_position != null
       ? { fixedPosition: row.fixed_position }
@@ -83,7 +82,7 @@ function toMissionCell(row: MissionContentRow): MissionCell {
 function toMissionCategory(row: MissionCategoryRow): MissionCategory {
   return {
     label: row.label,
-    count: row.count ?? 0,
+    count: 0,
     tone: row.tone ?? '',
   }
 }

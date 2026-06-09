@@ -82,9 +82,9 @@ describe('userBadgesQuerySchema', () => {
 })
 
 describe('badgeCatalogItemSchema', () => {
-  it('accepts additive runtime artwork while preserving legacy artworkKey', () => {
+  it('accepts runtime artwork without the legacy artworkKey field', () => {
     const parsed = badgeCatalogItemSchema.parse({
-      badgeId: 'mission:n01:v1',
+      badgeId: 'n01',
       missionId: 'n01',
       catalogVersion: 'api-migration-v1',
       title: '꽃',
@@ -102,6 +102,6 @@ describe('badgeCatalogItemSchema', () => {
     })
 
     expect(parsed.artwork).toMatchObject({ type: 'lucide', key: 'flower-2' })
-    expect(parsed.artworkKey).toBe('mission/n01')
+    expect(parsed).not.toHaveProperty('artworkKey')
   })
 })

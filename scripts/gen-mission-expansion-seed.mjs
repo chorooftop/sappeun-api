@@ -40,18 +40,6 @@ const BASE_SORT_ORDER = 480
 const SORT_STEP = 10
 const RUNTIME_CAPABILITY = 'runtime-artwork-v1'
 const SWATCH_HEX_CAPABILITY = 'swatch-hex-v1'
-const EASY_GRADE_LABEL = '일상 배지'
-const EASY_GRADE_COLOR = '#6ED6A0'
-
-const CATEGORY_TOTALS = {
-  nature: 32,
-  manmade: 42,
-  animal: 18,
-  time: 21,
-  self: 21,
-  color: 15,
-  special: 1,
-}
 
 const CATEGORY_META = {
   nature: { label: '자연·식물', tone: 'brand-primary' },
@@ -324,6 +312,7 @@ function normalizeMission(mission, index) {
     colorHex: swatch?.colorHex ?? null,
     noPhoto: null,
     fixedPosition: null,
+    awardsBadge: true,
     sortOrder: BASE_SORT_ORDER + index * SORT_STEP,
     requiredCapabilities: requiredCapabilities(mission),
     fallback: fallbackArtwork(mission),
@@ -389,6 +378,7 @@ function buildContentTuple(row) {
     sqlString(row.swatchLabel),
     sqlBool(row.noPhoto),
     sqlString(row.fixedPosition),
+    sqlBool(row.awardsBadge),
     sqlNumber(row.sortOrder),
     'true',
     jsonbLiteral(row.artwork),
@@ -396,31 +386,12 @@ function buildContentTuple(row) {
   ].join(', ')})`
 }
 
-function buildBadgeTuple(row) {
-  return `  (${[
-    sqlString(`mission:${row.id}:v1`),
-    sqlString(row.id),
-    sqlString(CATALOG_VERSION),
-    sqlString(row.label),
-    sqlString(row.category),
-    sqlString('easy'),
-    sqlString(EASY_GRADE_LABEL),
-    sqlString(EASY_GRADE_COLOR),
-    sqlString(`mission/${row.id}`),
-    sqlNumber(row.sortOrder),
-    'true',
-    capabilityArray(row.requiredCapabilities),
-  ].join(', ')})`
-}
-
-function buildCategoryTuple([key, count]) {
-  const meta = CATEGORY_META[key]
+function buildCategoryTuple([key, meta]) {
   return `  (${[
     sqlString(CATALOG_VERSION),
     sqlString(key),
     sqlString(meta.label),
     sqlString(meta.tone),
-    sqlNumber(count),
   ].join(', ')})`
 }
 
@@ -436,8 +407,7 @@ export function buildExpansionArtifacts() {
   })
 
   const contentValues = rows.map(buildContentTuple).join(',\n')
-  const badgeValues = rows.map(buildBadgeTuple).join(',\n')
-  const categoryValues = Object.entries(CATEGORY_TOTALS)
+  const categoryValues = Object.entries(CATEGORY_META)
     .map(buildCategoryTuple)
     .join(',\n')
 
@@ -447,11 +417,16 @@ export function buildExpansionArtifacts() {
 --
 -- The original 48-cell 0010 seed remains immutable. These 102 new rows are
 -- runtime-artwork gated so older clients keep receiving the legacy catalog.
+-- Badge identity is derived from mission_content; this migration intentionally
+-- does not insert mission_badges rows or stored category counts.
+
+alter table public.mission_content
+  add column if not exists awards_badge boolean not null default true;
 
 insert into public.mission_content (
   mission_id, catalog_version, label, category, hint, caption, capture_label,
   icon, variant, difficulty, camera, text_only, font_size, swatch, swatch_label,
-  no_photo, fixed_position, sort_order, active, artwork, required_capabilities
+  no_photo, fixed_position, awards_badge, sort_order, active, artwork, required_capabilities
 )
 values
 ${contentValues}
@@ -472,38 +447,21 @@ on conflict (catalog_version, mission_id) do update
       swatch_label = excluded.swatch_label,
       no_photo = excluded.no_photo,
       fixed_position = excluded.fixed_position,
+      awards_badge = excluded.awards_badge,
       sort_order = excluded.sort_order,
       active = excluded.active,
       artwork = excluded.artwork,
       required_capabilities = excluded.required_capabilities;
 
-insert into public.mission_badges (
-  id, mission_id, catalog_version, title, category, difficulty, grade_label,
-  grade_color, artwork_key, sort_order, active, required_capabilities
-)
-values
-${badgeValues}
-on conflict (catalog_version, mission_id) do update
-  set title       = excluded.title,
-      category    = excluded.category,
-      difficulty  = excluded.difficulty,
-      grade_label = excluded.grade_label,
-      grade_color = excluded.grade_color,
-      artwork_key = excluded.artwork_key,
-      sort_order  = excluded.sort_order,
-      active      = excluded.active,
-      required_capabilities = excluded.required_capabilities;
-
 insert into public.mission_categories (
-  catalog_version, key, label, tone, count
+  catalog_version, key, label, tone
 )
 values
 ${categoryValues}
 on conflict (catalog_version, key) do update
   set
       label = excluded.label,
-      tone = excluded.tone,
-      count = excluded.count;
+      tone = excluded.tone;
 
 notify pgrst, 'reload schema';
 `

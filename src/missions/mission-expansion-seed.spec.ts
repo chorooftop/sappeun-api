@@ -64,6 +64,13 @@ describe('mission expansion seed (v1.4)', () => {
     expect(committedManifest).toEqual(generated.manifest)
   })
 
+  it('does not regenerate deprecated mission_badges rows or stored category counts', () => {
+    expect(committedSql).not.toContain('insert into public.mission_badges')
+    expect(committedSql).not.toContain('grade_label')
+    expect(committedSql).not.toContain('grade_color')
+    expect(committedSql).not.toMatch(/catalog_version,\s*key,\s*label,\s*tone,\s*count/)
+  })
+
   it('adds exactly the 102 planned expansion missions with no legacy id overlap', () => {
     expect(EXPANSION_MISSIONS).toHaveLength(102)
     expect(generated.rows).toHaveLength(102)

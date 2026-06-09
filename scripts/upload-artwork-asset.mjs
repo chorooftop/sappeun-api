@@ -351,19 +351,7 @@ where catalog_version = ${sqlString(catalogVersion)}
   and mission_id = ${sqlString(missionId)};`
   }
 
-  if (target === 'mission_badges') {
-    const badgeId = requiredArg(args, 'badgeId')
-    return `update public.mission_badges
-set artwork = ${json}::jsonb,
-    required_capabilities = (
-      select array_agg(distinct capability)
-      from unnest(required_capabilities || array['${CAPABILITY}'::text]) as capability
-    )
-where id = ${sqlString(badgeId)}
-  and catalog_version = ${sqlString(catalogVersion)};`
-  }
-
-  throw new Error('--target must be mission_content or mission_badges.')
+  throw new Error('--target must be mission_content.')
 }
 
 function isNotFound(error) {

@@ -531,7 +531,7 @@ describe('BoardsService.endUserBoard with title + badges', () => {
         badgeCount: 2,
         earnedBadges: [
           {
-            badgeId: 'mission:m00:v1',
+            badgeId: 'm00',
             missionId: 'm00',
             title: '꽃',
             difficulty: 'easy',
@@ -562,7 +562,7 @@ describe('BoardsService.endUserBoard with title + badges', () => {
       badgeEligible: true,
       badgeCount: 2,
       earnedBadges: [
-        expect.objectContaining({ badgeId: 'mission:m00:v1', missionId: 'm00' }),
+        expect.objectContaining({ badgeId: 'm00', missionId: 'm00' }),
       ],
     })
     expect(badges.awardBoardBadges).toHaveBeenCalledTimes(1)
@@ -631,7 +631,7 @@ describe('BoardsService.endUserBoard with title + badges', () => {
         'board-1',
         [
           {
-            badgeId: 'mission:m00:v1',
+            badgeId: 'm00',
             missionId: 'm00',
             title: '꽃',
             difficulty: 'easy',
@@ -679,7 +679,7 @@ describe('BoardsService.endUserBoard with title + badges', () => {
       badgeCount: 1,
       earnedBadges: [
         expect.objectContaining({
-          badgeId: 'mission:m00:v1',
+          badgeId: 'm00',
           isFirstEarn: false,
         }),
       ],

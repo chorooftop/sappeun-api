@@ -1,13 +1,13 @@
 # Supabase 스키마 스냅샷 (Phase 0 진단 결과)
 
 ```
-조사일:   2026-05-31 KST (0001 기준) / 0006 추가: 2026-06-05 / 0013 추가: 2026-06-08
+조사일:   2026-05-31 KST (0001 기준) / 0006 추가: 2026-06-05 / 0019 추가: 2026-06-10
 방법:     PostgREST OpenAPI + 직접 SQL 진단(psql, ap-south-1 풀러)
 프로젝트:  wtptvgxyqkqqsfkdsoox (리전: ap-south-1)
 정식 덤프: supabase/migrations/0001_remote_baseline.sql (초기화 기준 schema-only baseline, 1150줄)
 진단 도구: scripts/introspect-schema.mjs(REST), scripts/introspect.sql(psql)
-최신 운영 적용 migration: 0013_client_capability_gate.sql
-대기 중 migration: 0014_bingo_mission_expansion.sql (assets.sappeun.app custom domain gate 이후 적용)
+최신 목표 migration: 0019_mission_category_counts_view.sql
+대기 중 migration: 없음
 ```
 
 > **Phase 0 완료.** 컬럼·타입·RLS·FK·CHECK·트리거까지 전부 실측 확정.
@@ -46,13 +46,18 @@
 > `X-Sappeun-App-Build`, `X-Sappeun-Client-Capabilities` 헤더를 파싱해 legacy client에는
 > gated row를 숨긴다.
 >
-> **0014 준비 완료 / 운영 적용 대기 (2026-06-08).** frontend plan
+> **0014 재작성 (2026-06-10).** frontend plan
 > `plans/bingo-mission-expansion-candidates.md` 기준 신규 미션 102개를 별도 seed로 추가한다.
-> 모든 신규 `mission_content`/`mission_badges` row는 `runtime-artwork-v1` capability로 gate하고,
+> 모든 신규 `mission_content` row는 `runtime-artwork-v1` capability로 gate하고,
 > color 확장 row는 `swatch-hex-v1`도 요구한다. Pencil `design_v2.pen` export 이미지는
 > `artifacts/mission-artwork/v1.4-pencil-export/manifest.json`의 해시 기반 `remoteImage` URL과
-> fallback ArtworkSpec으로 연결된다. `assets.sappeun.app` custom domain 공개 접근 검증 전까지
-> 운영 DB에는 적용하지 않는다.
+> fallback ArtworkSpec으로 연결된다. `mission_badges` row와 stored category count는 더 이상 생성하지 않는다.
+>
+> **0015-0019 추가 (2026-06-10).** `mission_content.difficulty`를 not null/default `'easy'`로
+> 명시화하고, `awards_badge`를 미션 속성으로 추가한다. `board_badges`/`user_badges`는 합성
+> `badge_id` 대신 version-agnostic `mission_id`를 FK로 사용한다. `award_board_badges(uuid,uuid,text[])`
+> 시그니처는 유지하되 text[]를 mission_id[]로 해석한다. `mission_badges`는 0018에서 drop되고,
+> `mission_categories.count`는 0019에서 `mission_category_counts` view로 파생한다.
 
 ---
 
@@ -60,8 +65,8 @@
 
 테이블: `board_cells, boards, clips, guest_clip_uploads, guest_photo_uploads,
 photos, profiles, shares, user_consents, mission_content, mission_categories,
-mission_badges, board_badges, user_badges` *(0006 추가)*
-뷰: `shared_board_view`
+board_badges, user_badges`
+뷰: `shared_board_view`, `mission_category_counts`
 함수: `require_current_consents_for_signup()`, `set_updated_at()`,
 `confirm_user_photo_upload()`, `confirm_user_clip_upload()`,
 `award_board_badges(uuid, uuid, text[])` *(0006 추가, security definer, service_role 전용)*
@@ -100,36 +105,14 @@ mission_badges, board_badges, user_badges` *(0006 추가)*
 
 - `photo_id`와 `clip_id`는 동시에 채울 수 없다(`board_cells_single_media_check`).
 
-### mission_badges *(0006)*
+### mission_badges *(0006 → 0018 drop)*
 
-| 컬럼 | 타입 | NULL | 비고 |
-|---|---|---|---|
-| id | text | NO | PK. 형식: `mission:<mission_id>:v1` |
-| mission_id | text | NO | sheet.json cell id (n01, m01, sf01 등) |
-| catalog_version | text | NO | 현재: `api-migration-v1` |
-| title | text | NO | CHECK char_length ≤ 40 |
-| category | text | YES | nature/manmade/animal/time/self/color |
-| difficulty | text | NO | CHECK ∈ {easy, medium, hard} |
-| grade_label | text | NO | easy→'일상 배지', medium→'도전 배지' |
-| grade_color | text | NO | easy→'#6ED6A0', medium→'#F5A623' |
-| artwork_key | text | YES | 예: `mission/n01` |
-| artwork | jsonb | YES | ArtworkSpec v1 override. NULL이면 `mission_content.artwork` fallback *(0012)* |
-| min_app_build | integer | YES | row 노출 최소 `X-Sappeun-App-Build` *(0013)* |
-| required_capabilities | text[] | NO | default `{}`. row 노출에 필요한 client capabilities *(0013)* |
-| active_from | timestamptz | YES | 예약 공개 시작 시각 *(0013)* |
-| active_until | timestamptz | YES | 예약 공개 종료 시각(exclusive) *(0013)* |
-| sort_order | integer | NO | 0 default, 10 단위 증가 |
-| active | boolean | NO | true default |
-| created_at | timestamptz | NO | now() |
+- 0006에서 배지 catalog/획득 FK 타깃으로 생성됐으나 0018에서 폐지.
+- 미션/배지 정체성의 단일 정본은 `mission_content`.
+- `grade_label`/`grade_color`는 DB에 저장하지 않고 API에서 `difficulty`로 파생한다.
+- legacy 합성 id 형식(`mission:<mission_id>:v1`)은 DB/API 응답에서 사용하지 않는다.
 
-- UNIQUE `(catalog_version, mission_id)`.
-- `artwork`는 배지 전용 override만 저장한다. 일반 배지는 `mission_content.artwork`를 사용한다.
-- Table privileges: `service_role` read/write only. `public`/`anon`/`authenticated` revoked.
-- RLS enabled. `mission_badges_select_active`: `active = true` 인 행만 authenticated 조회
-  (향후 table SELECT grant를 열 때 적용; backend API는 service_role으로 RLS 우회).
-- 47개 시드 (`api-migration-v1`, sheet.json v1.3.0). 제외: `id='free'` (category='special', 중앙 free 슬롯).
-
-### mission_content / mission_categories *(0010, 0012, 0013; 0014 pending)*
+### mission_content / mission_categories *(0010, 0012-0016, 0019)*
 
 | 컬럼 | 타입 | NULL | 비고 |
 |---|---|---|---|
@@ -138,9 +121,10 @@ mission_badges, board_badges, user_badges` *(0006 추가)*
 | label/category/hint/caption/capture_label | text | mixed | mission copy/cue content |
 | icon | text | YES | legacy lucide cue key |
 | variant | text | NO | CHECK ∈ {QeQCU, k4Srv, rAdyJ} |
-| difficulty | text | YES | CHECK ∈ {easy, medium, hard} |
+| difficulty | text | NO | default `'easy'`, CHECK ∈ {easy, medium, hard} |
 | camera/text_only/font_size/swatch/swatch_label/no_photo/fixed_position | mixed | YES | legacy renderer fields |
 | artwork | jsonb | YES | ArtworkSpec v1. 기존 48개 active row는 0012에서 백필됨 |
+| awards_badge | boolean | NO | default true. `free`/`special`은 false |
 | min_app_build | integer | YES | row 노출 최소 `X-Sappeun-App-Build` |
 | required_capabilities | text[] | NO | default `{}`. 예: `runtime-artwork-v1`, `swatch-hex-v1` |
 | active_from | timestamptz | YES | 예약 공개 시작 시각 |
@@ -148,25 +132,29 @@ mission_badges, board_badges, user_badges` *(0006 추가)*
 | sort_order | integer | NO | source order * 10 |
 | active | boolean | NO | true default |
 
-- `mission_content.artwork`가 미션 기본 시각 core의 정본이다.
-- 0014 pending 신규 102개 row는 `remoteImage` artwork와 fallback을 함께 가진다. 실제 public R2
+- `mission_content.artwork`가 미션/배지 기본 시각 core의 정본이다.
+- `mission_content.mission_id`는 0017 `mission_content_mission_id_key` unique 제약으로 단일버전
+  불변식을 가진다. `board_badges`/`user_badges` FK 타깃이다.
+- 0014 신규 102개 row는 `remoteImage` artwork와 fallback을 함께 가진다. 실제 public R2
   업로드 대상은 `artifacts/mission-artwork/v1.4-pencil-export/manifest.json`의 `objectKey`.
 - active row는 API service-role query 후 client capability/window 필터를 거쳐 반환된다.
 - Verification query: `select count(*) from public.mission_content where active = true and artwork is null;`
   expected `0` after 0012 backfill.
+- `mission_categories`는 `catalog_version`, `key`, `label`, `tone`만 저장한다. category count는
+  `mission_category_counts` view 또는 API 런타임 집계로 파생한다.
 
 ### board_badges *(0006)*
 
 | 컬럼 | 타입 | NULL | 비고 |
 |---|---|---|---|
 | board_id | uuid | NO | FK→boards ON DELETE CASCADE |
-| badge_id | text | NO | FK→mission_badges ON DELETE RESTRICT |
+| mission_id | text | NO | FK→mission_content(mission_id) ON DELETE RESTRICT |
 | user_id | uuid | NO | FK→auth.users ON DELETE CASCADE |
 | earned_at | timestamptz | NO | now() default |
 
-- PK `(board_id, badge_id)`.
+- PK `(board_id, mission_id)`.
 - INDEX `board_badges_user_board_idx (user_id, board_id)`.
-- INDEX `board_badges_badge_idx (badge_id)` *(0007)*.
+- INDEX `board_badges_mission_idx (mission_id)` *(0017)*.
 - Table privileges: `service_role` read/write only. `public`/`anon`/`authenticated` revoked.
 - RLS enabled. `board_badges_select_own`: `(select auth.uid()) = user_id`
   (향후 table SELECT grant를 열 때 적용; backend API는 service_role으로 RLS 우회).
@@ -177,15 +165,16 @@ mission_badges, board_badges, user_badges` *(0006 추가)*
 | 컬럼 | 타입 | NULL | 비고 |
 |---|---|---|---|
 | user_id | uuid | NO | FK→auth.users ON DELETE CASCADE |
-| badge_id | text | NO | FK→mission_badges ON DELETE RESTRICT |
+| mission_id | text | NO | FK→mission_content(mission_id) ON DELETE RESTRICT |
+| earned_catalog_version | text | YES | 획득 당시 catalog audit 메타. PK/FK 아님 |
 | first_board_id | uuid | YES | FK→boards ON DELETE SET NULL |
 | last_board_id | uuid | YES | FK→boards ON DELETE SET NULL |
 | first_earned_at | timestamptz | NO | now() default |
 | last_earned_at | timestamptz | NO | now() default |
 | earned_count | integer | NO | 1 default, CHECK ≥ 1 |
 
-- PK `(user_id, badge_id)`.
-- INDEX `user_badges_badge_idx (badge_id)` *(0007)*.
+- PK `(user_id, mission_id)`.
+- INDEX `user_badges_mission_idx (mission_id)` *(0017)*.
 - INDEX `user_badges_first_board_idx (first_board_id)` *(0007)*.
 - INDEX `user_badges_last_board_idx (last_board_id)` *(0007)*.
 - Table privileges: `service_role` read/write only. `public`/`anon`/`authenticated` revoked.
@@ -202,6 +191,7 @@ returns table (badge_id text, is_first_earn boolean)
 
 - `security definer set search_path to 'public'`.
 - service_role 전용(`auth.role() <> 'service_role'` → raise 42501).
+- 시그니처 호환을 위해 `p_badge_ids`/return `badge_id` 이름은 유지하지만 값은 `mission_id`다.
 - 원자적 CTE: `board_badges` insert (on-conflict-do-nothing) → `user_badges` upsert (earned_count +1).
 - `on conflict`는 `board_badges_pkey`, `user_badges_pkey` constraint target을 명시한다(0008).
 - 동일 board 재호출은 board_badges에서 conflict → user_badges rollup 미발생 → earned_count 불변 (idempotent self-heal).

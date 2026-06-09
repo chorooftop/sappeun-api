@@ -24,7 +24,6 @@ export const badgeCatalogItemSchema = z.object({
   difficulty: z.string(),
   gradeLabel: z.string(),
   gradeColor: z.string(),
-  artworkKey: z.string().nullable(),
   artwork: artworkSpecSchema.optional(),
   sortOrder: z.number(),
 })
