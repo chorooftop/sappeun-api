@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { MAX_CLIP_DESCRIPTION_LENGTH } from '@/media/media.constants'
 
-export const boardModeSchema = z.enum(['5x5', '3x3'])
+export const boardModeSchema = z.literal('3x3')
 export const boardKindSchema = z.enum(['mission', 'custom'])
 export const boardListStatusSchema = z.enum(['completed', 'active', 'all'])
 const queryBooleanSchema = z.preprocess((value) => {
@@ -18,8 +18,11 @@ export const boardListQuerySchema = z.object({
   includePreview: queryBooleanSchema.default(false),
 })
 
-export function boardSizeForMode(mode: z.infer<typeof boardModeSchema>) {
-  return mode === '3x3' ? 9 : 25
+export function boardSizeForMode(mode: unknown) {
+  if (mode !== '3x3') {
+    throw new Error('BOARD_MODE_UNSUPPORTED')
+  }
+  return 9
 }
 
 function validateCellIdentity(
@@ -168,27 +171,27 @@ export const boardSnapshotSchema = z
     nickname: z.string().trim().min(1).max(40),
     title: z.string().trim().min(1).max(24).optional(),
     description: z.string().trim().max(120).optional(),
-    freePosition: z.number().int().min(0).max(24),
-    cellIds: z.array(z.string().min(1).max(80)).min(9).max(25),
-    missionSnapshots: z.array(missionSnapshotSchema).min(9).max(25).optional(),
+    freePosition: z.number().int().min(0).max(8),
+    cellIds: z.array(z.string().min(1).max(80)).length(9),
+    missionSnapshots: z.array(missionSnapshotSchema).length(9).optional(),
   })
   .superRefine(validateBoardShape)
 
 export const persistedBoardPhotoSchema = z.object({
-  position: z.number().int().min(0).max(24),
+  position: z.number().int().min(0).max(8),
   cellId: z.string().min(1).max(80),
   photoId: z.uuid(),
-  ownerKind: z.enum(['guest', 'user']),
+  ownerKind: z.literal('user'),
   previewUrl: z.string().optional(),
   previewUrlExpiresAt: z.string().optional(),
   uploadStatus: z.enum(['uploading', 'uploaded', 'failed']),
 })
 
 export const persistedBoardClipSchema = z.object({
-  position: z.number().int().min(0).max(24),
+  position: z.number().int().min(0).max(8),
   cellId: z.string().min(1).max(80),
   clipId: z.uuid(),
-  ownerKind: z.enum(['guest', 'user']),
+  ownerKind: z.literal('user'),
   clipUrl: z.string().optional(),
   clipUrlExpiresAt: z.string().optional(),
   posterUrl: z.string().optional(),
@@ -209,10 +212,10 @@ export const boardSessionSchema = z.discriminatedUnion('version', [
       nickname: z.string().trim().min(1).max(40),
       createdAt: z.string().min(1),
       updatedAt: z.string().min(1),
-      freePosition: z.number().int().min(0).max(24),
-      cellIds: z.array(z.string().min(1).max(80)).min(9).max(25),
-      markedPositions: z.array(z.number().int().min(0).max(24)).max(25),
-      photos: z.array(persistedBoardPhotoSchema).max(25),
+      freePosition: z.number().int().min(0).max(8),
+      cellIds: z.array(z.string().min(1).max(80)).length(9),
+      markedPositions: z.array(z.number().int().min(0).max(8)).max(9),
+      photos: z.array(persistedBoardPhotoSchema).max(9),
       endedAt: z.string().nullable(),
     })
     .superRefine(validateBoardShape),
@@ -225,10 +228,10 @@ export const boardSessionSchema = z.discriminatedUnion('version', [
       nickname: z.string().trim().min(1).max(40),
       createdAt: z.string().min(1),
       updatedAt: z.string().min(1),
-      freePosition: z.number().int().min(0).max(24),
-      cellIds: z.array(z.string().min(1).max(80)).min(9).max(25),
-      markedPositions: z.array(z.number().int().min(0).max(24)).max(25),
-      clips: z.array(persistedBoardClipSchema).max(25),
+      freePosition: z.number().int().min(0).max(8),
+      cellIds: z.array(z.string().min(1).max(80)).length(9),
+      markedPositions: z.array(z.number().int().min(0).max(8)).max(9),
+      clips: z.array(persistedBoardClipSchema).max(9),
       endedAt: z.string().nullable(),
     })
     .superRefine(validateBoardShape),
@@ -244,11 +247,11 @@ export const boardSessionSchema = z.discriminatedUnion('version', [
       description: z.string().trim().max(120).optional(),
       createdAt: z.string().min(1),
       updatedAt: z.string().min(1),
-      freePosition: z.number().int().min(0).max(24),
-      cellIds: z.array(z.string().min(1).max(80)).min(9).max(25),
-      missionSnapshots: z.array(missionSnapshotSchema).min(9).max(25),
-      markedPositions: z.array(z.number().int().min(0).max(24)).max(25),
-      clips: z.array(persistedBoardClipSchema).max(25),
+      freePosition: z.number().int().min(0).max(8),
+      cellIds: z.array(z.string().min(1).max(80)).length(9),
+      missionSnapshots: z.array(missionSnapshotSchema).length(9),
+      markedPositions: z.array(z.number().int().min(0).max(8)).max(9),
+      clips: z.array(persistedBoardClipSchema).max(9),
       endedAt: z.string().nullable(),
     })
     .superRefine(validateBoardShape),
@@ -287,5 +290,9 @@ export type BoardSessionInput = z.infer<typeof boardSessionSchema>
 export type BoardListQueryInput = z.infer<typeof boardListQuerySchema>
 export type EndBoardInput = z.infer<typeof endBoardSchema>
 export type UpdateBoardTitleInput = z.infer<typeof updateBoardTitleSchema>
-export type EditBoardCellMissionInput = z.infer<typeof editBoardCellMissionSchema>
-export type RestoreBoardCellMissionInput = z.infer<typeof restoreBoardCellMissionSchema>
+export type EditBoardCellMissionInput = z.infer<
+  typeof editBoardCellMissionSchema
+>
+export type RestoreBoardCellMissionInput = z.infer<
+  typeof restoreBoardCellMissionSchema
+>

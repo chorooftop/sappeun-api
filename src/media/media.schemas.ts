@@ -14,7 +14,7 @@ import {
   MAX_POSTER_SIZE_BYTES,
 } from '@/media/media.constants'
 
-export const ownerKindSchema = z.enum(['guest', 'user'])
+export const ownerKindSchema = z.literal('user')
 export const photoOwnerKindSchema = ownerKindSchema
 export const clipOwnerKindSchema = ownerKindSchema
 export const clipContentTypeSchema = z.enum(['video/mp4', 'video/webm'])
@@ -72,7 +72,8 @@ function validateMediaBoardShape(
       ctx.addIssue({
         code: 'custom',
         path: ['missionSnapshots', position, 'id'],
-        message: 'Mission snapshot id must match the cell id at the same position.',
+        message:
+          'Mission snapshot id must match the cell id at the same position.',
       })
     }
   })
@@ -88,11 +89,11 @@ function validateClipBoardSnapshot(
 ) {
   const boardSize = value.cellIds.length
 
-  if (boardSize !== 9 && boardSize !== 25) {
+  if (boardSize !== 9) {
     ctx.addIssue({
       code: 'custom',
       path: ['cellIds'],
-      message: 'Board snapshot must contain exactly 9 or 25 cells.',
+      message: 'Board snapshot must contain exactly 9 cells.',
     })
   }
 
@@ -117,7 +118,8 @@ function validateClipBoardSnapshot(
       ctx.addIssue({
         code: 'custom',
         path: ['missionSnapshots', position, 'id'],
-        message: 'Mission snapshot id must match the cell id at the same position.',
+        message:
+          'Mission snapshot id must match the cell id at the same position.',
       })
     }
   })
@@ -128,9 +130,9 @@ export const presignPhotoUploadSchema = z
     clientBoardSessionId: z.string().min(1).max(120),
     mode: boardModeSchema,
     nickname: z.string().trim().min(1).max(40),
-    freePosition: z.number().int().min(0).max(24),
-    cellIds: z.array(z.string().min(1).max(80)).min(9).max(25),
-    position: z.number().int().min(0).max(24),
+    freePosition: z.number().int().min(0).max(8),
+    cellIds: z.array(z.string().min(1).max(80)).length(9),
+    position: z.number().int().min(0).max(8),
     cellId: z.string().min(1).max(80),
     contentType: z.string().min(1).max(120),
     sizeBytes: z.number().int().min(1).max(MAX_PHOTO_SIZE_BYTES),
@@ -167,10 +169,10 @@ export const presignClipUploadSchema = z
       .trim()
       .max(MAX_CLIP_DESCRIPTION_LENGTH)
       .optional(),
-    freePosition: z.number().int().min(0).max(24),
-    cellIds: z.array(z.string().min(1).max(80)).min(9).max(25),
-    missionSnapshots: z.array(missionSnapshotSchema).min(9).max(25),
-    position: z.number().int().min(0).max(24),
+    freePosition: z.number().int().min(0).max(8),
+    cellIds: z.array(z.string().min(1).max(80)).length(9),
+    missionSnapshots: z.array(missionSnapshotSchema).length(9),
+    position: z.number().int().min(0).max(8),
     cellId: z.string().min(1).max(80),
     contentType: clipContentTypeSchema,
     recorderMimeType: z.string().min(1).max(160),
@@ -199,9 +201,9 @@ export const updateClipDescriptionSchema = z.object({
       boardKind: boardKindSchema,
       title: z.string().trim().min(1).max(24),
       description: z.string().trim().max(120).optional(),
-      freePosition: z.number().int().min(0).max(24),
-      cellIds: z.array(z.string().min(1).max(80)).min(9).max(25),
-      missionSnapshots: z.array(missionSnapshotSchema).min(9).max(25),
+      freePosition: z.number().int().min(0).max(8),
+      cellIds: z.array(z.string().min(1).max(80)).length(9),
+      missionSnapshots: z.array(missionSnapshotSchema).length(9),
     })
     .superRefine(validateClipBoardSnapshot)
     .optional(),

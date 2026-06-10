@@ -19,7 +19,17 @@ import type {
   RestoreBoardCellMissionInput,
   UpdateBoardTitleInput,
 } from '@/boards/boards.schemas'
-import { boardSizeForMode, missionSnapshotSchema } from '@/boards/boards.schemas'
+import {
+  boardSizeForMode,
+  missionSnapshotSchema,
+} from '@/boards/boards.schemas'
+import { ClockService } from '@/common/time/clock.service'
+import {
+  computeLifecycle,
+  kstDateOf,
+  previousKstDate,
+  type BoardLifecycle,
+} from '@/common/time/kst'
 import { SIGNED_PREVIEW_EXPIRES_SECONDS } from '@/media/media.constants'
 import { signedUrlExpiresAt } from '@/media/media.utils'
 import { R2Service } from '@/storage/r2.service'
@@ -30,9 +40,18 @@ export type BoardKind = 'mission' | 'custom'
 export type BoardHistoryStatus = 'active' | 'completed'
 export type CompletionType = 'photo' | 'no_photo' | 'clip' | 'no_media' | 'free'
 export type BoardCustomizationStatus = 'official' | 'edited'
+export type BoardEndReason = 'completed' | 'auto_grace_expired'
 
 interface BoardIdRow {
   id: string
+}
+
+export interface LastBoardResult {
+  boardId: string
+  endReason: BoardEndReason | null
+  completedCells: number
+  dailyDate: string
+  streakCount: number
 }
 
 export interface MissionSnapshot {
@@ -62,6 +81,9 @@ export interface BoardRow {
   ended_at: string | null
   deleted_at?: string | null
   customization_status?: BoardCustomizationStatus | null
+  daily_date?: string | null
+  reroll_count?: number | null
+  end_reason?: BoardEndReason | null
 }
 
 export interface BoardCellRow {
@@ -126,7 +148,7 @@ const CLIP_HISTORY_SELECT =
   'id, user_id, board_id, position, cell_id, storage_path, poster_storage_path, storage_provider, bucket_name, duration_ms, uploaded_at, recorded_at, description, deleted_at'
 
 const BOARD_HISTORY_SELECT =
-  'id, user_id, mode, board_kind, client_session_id, nickname, title, description, free_position, cell_ids, created_at, updated_at, ended_at, deleted_at, customization_status'
+  'id, user_id, mode, board_kind, client_session_id, nickname, title, description, free_position, cell_ids, created_at, updated_at, ended_at, deleted_at, customization_status, daily_date, reroll_count, end_reason'
 
 const COMPLETION_TYPES = new Set<CompletionType>([
   'photo',
@@ -135,6 +157,36 @@ const COMPLETION_TYPES = new Set<CompletionType>([
   'no_media',
   'free',
 ])
+
+const SUPPORTED_BOARD_MODE: BoardMode = '3x3'
+const DAILY_REROLL_LIMIT = 3
+const DAILY_BOARD_UNIQUE_INDEX = 'boards_user_daily_uidx'
+
+function dailyBingoEnabled() {
+  return process.env.DAILY_BINGO_ENABLED !== 'false'
+}
+
+function domainConflict(code: string, message: string) {
+  return new ConflictException({ code, message })
+}
+
+function domainBadRequest(code: string, message: string) {
+  return new BadRequestException({ code, message })
+}
+
+function boardDailyDate(board: Pick<BoardRow, 'daily_date' | 'created_at'>) {
+  return board.daily_date ?? kstDateOf(new Date(board.created_at))
+}
+
+function boardRerollCount(board: Pick<BoardRow, 'reroll_count'>) {
+  return board.reroll_count ?? 0
+}
+
+function isDailyUniqueConflict(error: { message?: string; details?: string }) {
+  return [error.message, error.details].some((value) =>
+    value?.includes(DAILY_BOARD_UNIQUE_INDEX),
+  )
+}
 
 function boardKindFor(input: BoardSnapshotInput | BoardRow): BoardKind {
   const snapshot = input as Partial<BoardSnapshotInput>
@@ -204,6 +256,12 @@ function boardUpdatedAt(board: BoardRow) {
 }
 
 function validateBoardSnapshotInput(input: BoardSnapshotInput) {
+  if (input.mode !== SUPPORTED_BOARD_MODE) {
+    throw domainBadRequest(
+      'BOARD_MODE_UNSUPPORTED',
+      'Only 3x3 boards are supported.',
+    )
+  }
   const boardSize = boardSizeForMode(input.mode)
   const requiresMissionSnapshots = boardKindFor(input) === 'mission'
 
@@ -245,6 +303,12 @@ function validateBoardMediaCell(params: {
   position: number
   cellId: string
 }) {
+  if (params.board.mode !== SUPPORTED_BOARD_MODE) {
+    throw domainBadRequest(
+      'BOARD_MODE_UNSUPPORTED',
+      'Only 3x3 boards are supported.',
+    )
+  }
   const boardSize = boardSizeForMode(params.board.mode)
   const cellIds = params.board.cell_ids ?? []
 
@@ -261,10 +325,8 @@ function validateBoardMediaCell(params: {
   }
 }
 
-function isRestorableBoardMode(
-  mode: BoardMode | undefined,
-): mode is '5x5' | '3x3' {
-  return mode === '5x5' || mode === '3x3'
+function isRestorableBoardMode(mode: BoardMode | undefined): mode is '3x3' {
+  return mode === SUPPORTED_BOARD_MODE
 }
 
 export interface BoardCompletionSummary {
@@ -362,6 +424,22 @@ export function summarizeBoardCompletion(
   }
 }
 
+function countNonFreeCompletedCells(
+  board: BoardRow,
+  cells: readonly BoardCellRow[],
+) {
+  const boardSize = boardSizeForMode(board.mode)
+  const hasValidCellSnapshot = board.cell_ids?.length === boardSize
+  if (!hasValidCellSnapshot) return 0
+
+  return cells.filter(
+    (cell) =>
+      cell.position !== board.free_position &&
+      isValidBoardCell(board, cell, boardSize) &&
+      hasCellCompletionEvidence(cell, false),
+  ).length
+}
+
 export interface BoardCustomization {
   editedCellCount: number
   customizationStatus: BoardCustomizationStatus
@@ -432,9 +510,11 @@ function toHistoryItem(
   board: BoardRow,
   cells: readonly BoardCellRow[],
   badgeCount = 0,
+  streakCount = 0,
 ) {
   const summary = summarizeBoardCompletion(board, cells)
   const customization = computeBoardCustomization(board, cells)
+  const dailyDate = boardDailyDate(board)
 
   return {
     id: board.id,
@@ -442,6 +522,13 @@ function toHistoryItem(
     status: boardHistoryStatus(board),
     mode: board.mode,
     boardKind: boardKindFor(board),
+    dailyDate,
+    rerollCount: boardRerollCount(board),
+    rerollLimit: DAILY_REROLL_LIMIT,
+    rerollsRemaining: Math.max(0, DAILY_REROLL_LIMIT - boardRerollCount(board)),
+    endReason: board.end_reason ?? null,
+    streakCount,
+    completedCells: summary.completedCount,
     nickname: board.nickname ?? '산책',
     title: boardTitleFor(board),
     description: boardDescriptionFor(board),
@@ -473,6 +560,7 @@ function toBoardCompletionCloseResponse(
   board: BoardRow,
   cells: readonly BoardCellRow[],
   badgeInfo: { badgeCount: number; earnedBadges: EarnedBadge[] },
+  streakCount = 0,
 ) {
   const summary = summarizeBoardCompletion(board, cells)
   const customization = computeBoardCustomization(board, cells)
@@ -480,7 +568,14 @@ function toBoardCompletionCloseResponse(
   return {
     id: board.id,
     title: boardTitleFor(board),
+    dailyDate: boardDailyDate(board),
     endedAt: board.ended_at,
+    endReason: board.end_reason ?? null,
+    rerollCount: boardRerollCount(board),
+    rerollLimit: DAILY_REROLL_LIMIT,
+    rerollsRemaining: Math.max(0, DAILY_REROLL_LIMIT - boardRerollCount(board)),
+    streakCount,
+    completedCells: summary.completedCount,
     ...summary,
     customizationStatus: customization.customizationStatus,
     editedCellCount: customization.editedCellCount,
@@ -490,7 +585,9 @@ function toBoardCompletionCloseResponse(
   }
 }
 
-function missionWithCaptureFallback(snapshot: MissionSnapshot): MissionSnapshot {
+function missionWithCaptureFallback(
+  snapshot: MissionSnapshot,
+): MissionSnapshot {
   return {
     ...snapshot,
     captureLabel: snapshot.captureLabel ?? snapshot.label,
@@ -532,15 +629,249 @@ export class BoardsService {
     private readonly r2: R2Service,
     private readonly supabase: SupabaseService,
     private readonly badges: BadgesService,
+    private readonly clock: ClockService = new ClockService(),
   ) {}
 
   private get admin(): any {
     return this.supabase.adminClient
   }
 
+  private dailyBingoEnabled() {
+    return dailyBingoEnabled()
+  }
+
+  private now() {
+    return this.clock.now()
+  }
+
+  private async getLatestOpenBoard(userId: string) {
+    const { data, error } = await this.admin
+      .from('boards')
+      .select(BOARD_HISTORY_SELECT)
+      .eq('user_id', userId)
+      .eq('mode', SUPPORTED_BOARD_MODE)
+      .is('ended_at', null)
+      .is('deleted_at', null)
+      .not('client_session_id', 'is', null)
+      .not('cell_ids', 'is', null)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (error) throw error
+    return data as BoardRow | null
+  }
+
+  private async getTodayBoard(userId: string, dailyDate: string) {
+    const { data, error } = await this.admin
+      .from('boards')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('daily_date', dailyDate)
+      .eq('mode', SUPPORTED_BOARD_MODE)
+      .is('deleted_at', null)
+      .not('client_session_id', 'is', null)
+      .limit(1)
+      .maybeSingle()
+
+    if (error) throw error
+    return data as BoardIdRow | null
+  }
+
+  private async enforceDailyCreateGuard(userId: string) {
+    const now = this.now()
+    const today = kstDateOf(now)
+    const latestOpen = await this.getLatestOpenBoard(userId)
+
+    if (latestOpen) {
+      const latestDailyDate = boardDailyDate(latestOpen)
+      const lifecycle = computeLifecycle(latestDailyDate, now)
+
+      if (lifecycle.state === 'expired') {
+        await this.closeExpiredBoard(userId, latestOpen)
+      } else if (latestDailyDate === today) {
+        throw domainConflict(
+          'DAILY_BOARD_EXISTS',
+          'A board already exists for today.',
+        )
+      } else if (lifecycle.state === 'grace') {
+        throw domainConflict(
+          'PENDING_PREVIOUS_BOARD',
+          'The previous daily board is still in its grace window.',
+        )
+      }
+    }
+
+    if (await this.getTodayBoard(userId, today)) {
+      throw domainConflict(
+        'DAILY_BOARD_EXISTS',
+        'A board already exists for today.',
+      )
+    }
+
+    return today
+  }
+
+  private async canStartToday(userId: string) {
+    if (!this.dailyBingoEnabled()) return true
+
+    const now = this.now()
+    const today = kstDateOf(now)
+    if (await this.getTodayBoard(userId, today)) return false
+
+    const latestOpen = await this.getLatestOpenBoard(userId)
+    if (!latestOpen) return true
+
+    const lifecycle = computeLifecycle(boardDailyDate(latestOpen), now)
+    return lifecycle.state === 'expired'
+  }
+
+  private async closeExpiredBoard(userId: string, board: BoardRow) {
+    const cells = await this.getBoardCellsForBoard(board.id)
+    const summary = summarizeBoardCompletion(board, cells)
+    const userCompletedCells = countNonFreeCompletedCells(board, cells)
+    const now = this.now().toISOString()
+
+    if (userCompletedCells === 0) {
+      const { error } = await this.admin
+        .from('boards')
+        .update({ deleted_at: now, updated_at: now })
+        .eq('id', board.id)
+        .eq('user_id', userId)
+        .is('ended_at', null)
+        .is('deleted_at', null)
+
+      if (error) throw error
+      console.info(
+        JSON.stringify({
+          event: 'daily_bingo_lazy_expire',
+          boardId: board.id,
+          endReason: null,
+          completedCells: 0,
+        }),
+      )
+      return null
+    }
+
+    const { data, error } = await this.admin
+      .from('boards')
+      .update({
+        ended_at: now,
+        updated_at: now,
+        end_reason: 'auto_grace_expired',
+      })
+      .eq('id', board.id)
+      .eq('user_id', userId)
+      .is('ended_at', null)
+      .is('deleted_at', null)
+      .select(BOARD_HISTORY_SELECT)
+      .maybeSingle()
+
+    if (error) throw error
+    const updated = (data as BoardRow | null) ?? {
+      ...board,
+      ended_at: now,
+      updated_at: now,
+      end_reason: 'auto_grace_expired' as const,
+    }
+    console.info(
+      JSON.stringify({
+        event: 'daily_bingo_lazy_expire',
+        boardId: board.id,
+        endReason: 'auto_grace_expired',
+        completedCells: summary.completedCount,
+      }),
+    )
+    return this.lastResultFromBoard(userId, updated, cells)
+  }
+
+  private async lastResultFromBoard(
+    userId: string,
+    board: BoardRow,
+    cells: readonly BoardCellRow[],
+  ): Promise<LastBoardResult> {
+    const summary = summarizeBoardCompletion(board, cells)
+    const dailyDate = boardDailyDate(board)
+    const endReason = board.end_reason ?? null
+
+    return {
+      boardId: board.id,
+      endReason,
+      completedCells: summary.completedCount,
+      dailyDate,
+      streakCount:
+        endReason === 'completed'
+          ? await this.computeStreakEndingAt(userId, dailyDate)
+          : 0,
+    }
+  }
+
+  private async getLastBoardResult(
+    userId: string,
+  ): Promise<LastBoardResult | null> {
+    const { data, error } = await this.admin
+      .from('boards')
+      .select(BOARD_HISTORY_SELECT)
+      .eq('user_id', userId)
+      .eq('mode', SUPPORTED_BOARD_MODE)
+      .is('deleted_at', null)
+      .not('ended_at', 'is', null)
+      .not('client_session_id', 'is', null)
+      .order('ended_at', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (error) throw error
+    const board = data as BoardRow | null
+    if (!board) return null
+
+    const cells = await this.getBoardCellsForBoard(board.id)
+    return this.lastResultFromBoard(userId, board, cells)
+  }
+
+  private async deleteMalformedOpenBoard(userId: string, boardId: string) {
+    const now = this.now().toISOString()
+    const { error } = await this.admin
+      .from('boards')
+      .update({ deleted_at: now, updated_at: now })
+      .eq('id', boardId)
+      .eq('user_id', userId)
+      .is('ended_at', null)
+      .is('deleted_at', null)
+
+    if (error) throw error
+  }
+
+  private async computeStreakEndingAt(userId: string, dailyDate: string) {
+    const { data, error } = await this.admin
+      .from('boards')
+      .select('daily_date')
+      .eq('user_id', userId)
+      .eq('mode', SUPPORTED_BOARD_MODE)
+      .eq('end_reason', 'completed')
+      .is('deleted_at', null)
+      .not('daily_date', 'is', null)
+      .lte('daily_date', dailyDate)
+      .order('daily_date', { ascending: false })
+      .limit(370)
+
+    if (error) throw error
+
+    let expected = dailyDate
+    let streak = 0
+    for (const row of (data ?? []) as { daily_date: string | null }[]) {
+      if (row.daily_date !== expected) break
+      streak += 1
+      expected = previousKstDate(expected)
+    }
+
+    return streak
+  }
+
   async ensureUserBoard(userId: string, input: BoardSnapshotInput) {
     validateBoardSnapshotInput(input)
-    const now = new Date().toISOString()
+    const now = this.now().toISOString()
     const existingResult = await this.admin
       .from('boards')
       .select('id')
@@ -570,9 +901,12 @@ export class BoardsService {
 
       if (updateError) throw updateError
       await this.upsertBoardCellSnapshots(existing.id, input)
-      await this.deleteOtherActiveUserBoards(userId, input.clientBoardSessionId)
       return existing.id
     }
+
+    const dailyDate = this.dailyBingoEnabled()
+      ? await this.enforceDailyCreateGuard(userId)
+      : null
 
     const insertResult = await this.admin
       .from('boards')
@@ -587,6 +921,8 @@ export class BoardsService {
         free_position: input.freePosition,
         cell_ids: input.cellIds,
         seed_recipe: makeSeedRecipe(input),
+        daily_date: dailyDate,
+        reroll_count: 0,
         updated_at: now,
       })
       .select('id')
@@ -596,6 +932,13 @@ export class BoardsService {
 
     if (insertError) {
       if (insertError.code === '23505') {
+        if (isDailyUniqueConflict(insertError)) {
+          throw domainConflict(
+            'DAILY_BOARD_EXISTS',
+            'A board already exists for today.',
+          )
+        }
+
         const racedResult = await this.admin
           .from('boards')
           .select('id')
@@ -608,10 +951,6 @@ export class BoardsService {
         if (racedSelectError) throw racedSelectError
         if (racedExisting) {
           await this.upsertBoardCellSnapshots(racedExisting.id, input)
-          await this.deleteOtherActiveUserBoards(
-            userId,
-            input.clientBoardSessionId,
-          )
           return racedExisting.id
         }
       }
@@ -620,7 +959,11 @@ export class BoardsService {
 
     if (!inserted) throw new Error('Board insert did not return an id.')
     await this.upsertBoardCellSnapshots(inserted.id, input)
-    await this.deleteOtherActiveUserBoards(userId, input.clientBoardSessionId)
+    await this.deleteOtherActiveUserBoards(
+      userId,
+      input.clientBoardSessionId,
+      dailyDate,
+    )
     return inserted.id
   }
 
@@ -663,68 +1006,10 @@ export class BoardsService {
     return board.id
   }
 
-  async ensureUserBoardForGuestPhotoPromotion(
-    userId: string,
-    input: {
-      clientBoardSessionId: string
-      mode: BoardMode
-      nickname: string
-      freePosition: number
-      cellIds: string[]
-      position: number
-      cellId: string
-    },
-  ) {
-    validateBoardMediaCell({
-      board: {
-        mode: input.mode,
-        cell_ids: input.cellIds,
-        free_position: input.freePosition,
-      },
-      position: input.position,
-      cellId: input.cellId,
-    })
-
-    const { data, error } = await this.admin
-      .from('boards')
-      .select('id, user_id, mode, cell_ids, free_position')
-      .eq('user_id', userId)
-      .eq('client_session_id', input.clientBoardSessionId)
-      .is('deleted_at', null)
-      .maybeSingle()
-
-    if (error) throw error
-    const board = data as BoardRow | null
-
-    if (board) {
-      if (board.mode !== input.mode) {
-        throw new BadRequestException('Board mode does not match the session.')
-      }
-
-      validateBoardMediaCell({
-        board,
-        position: input.position,
-        cellId: input.cellId,
-      })
-
-      return board.id
-    }
-
-    return this.ensureUserBoard(userId, {
-      clientBoardSessionId: input.clientBoardSessionId,
-      mode: input.mode,
-      boardKind: 'custom',
-      nickname: input.nickname,
-      title: input.nickname,
-      freePosition: input.freePosition,
-      cellIds: input.cellIds,
-    })
-  }
-
   async touchUserBoard(boardId: string) {
     const { error } = await this.admin
       .from('boards')
-      .update({ updated_at: new Date().toISOString() })
+      .update({ updated_at: this.now().toISOString() })
       .eq('id', boardId)
 
     if (error) throw error
@@ -786,6 +1071,7 @@ export class BoardsService {
       .from('boards')
       .select(BOARD_HISTORY_SELECT)
       .eq('user_id', userId)
+      .eq('mode', SUPPORTED_BOARD_MODE)
       .is('deleted_at', null)
       .not('client_session_id', 'is', null)
 
@@ -975,7 +1261,7 @@ export class BoardsService {
     cellId: string
     marked: boolean
   }) {
-    const completedAt = params.marked ? new Date().toISOString() : null
+    const completedAt = params.marked ? this.now().toISOString() : null
     const { data: board, error: boardError } = await this.admin
       .from('boards')
       .select('id')
@@ -1004,7 +1290,7 @@ export class BoardsService {
 
     const { error: updateError } = await this.admin
       .from('boards')
-      .update({ updated_at: new Date().toISOString() })
+      .update({ updated_at: this.now().toISOString() })
       .eq('id', params.boardId)
       .eq('user_id', params.userId)
     if (updateError) throw updateError
@@ -1048,12 +1334,34 @@ export class BoardsService {
 
     const { error: updateError } = await this.admin
       .from('boards')
-      .update({ updated_at: new Date().toISOString() })
+      .update({ updated_at: this.now().toISOString() })
       .eq('id', params.boardId)
       .eq('user_id', params.userId)
     if (updateError) throw updateError
 
     return true
+  }
+
+  async ackBoardReroll(userId: string, boardId: string) {
+    const { data, error } = await this.admin.rpc('reroll_board', {
+      p_board_id: boardId,
+      p_user_id: userId,
+      p_limit: DAILY_REROLL_LIMIT,
+    })
+
+    if (error) throw error
+    const row = Array.isArray(data) ? data[0] : data
+    const rerollCount = row?.reroll_count
+
+    if (typeof rerollCount !== 'number') {
+      throw domainConflict('REROLL_LIMIT_EXCEEDED', 'Reroll limit exceeded.')
+    }
+
+    return {
+      rerollCount,
+      rerollLimit: DAILY_REROLL_LIMIT,
+      rerollsRemaining: Math.max(0, DAILY_REROLL_LIMIT - rerollCount),
+    }
   }
 
   async endUserBoard(userId: string, boardId: string, input?: EndBoardInput) {
@@ -1086,10 +1394,10 @@ export class BoardsService {
       return this.resolveAlreadyEndedClose(userId, board, cells)
     }
 
-    const now = new Date().toISOString()
+    const now = this.now().toISOString()
     const { data, error } = await this.admin
       .from('boards')
-      .update({ ended_at: now, updated_at: now })
+      .update({ ended_at: now, updated_at: now, end_reason: 'completed' })
       .eq('id', boardId)
       .eq('user_id', userId)
       .is('ended_at', null)
@@ -1117,7 +1425,7 @@ export class BoardsService {
   ): Promise<BoardRow> {
     const { data, error } = await this.admin
       .from('boards')
-      .update({ title, updated_at: new Date().toISOString() })
+      .update({ title, updated_at: this.now().toISOString() })
       .eq('id', board.id)
       .eq('user_id', userId)
       .select(BOARD_HISTORY_SELECT)
@@ -1133,12 +1441,21 @@ export class BoardsService {
     cells: readonly BoardCellRow[],
   ) {
     const customization = computeBoardCustomization(board, cells)
+    const streakCount = await this.computeStreakEndingAt(
+      userId,
+      boardDailyDate(board),
+    )
 
     if (!customization.badgeEligible) {
-      return toBoardCompletionCloseResponse(board, cells, {
-        badgeCount: 0,
-        earnedBadges: [],
-      })
+      return toBoardCompletionCloseResponse(
+        board,
+        cells,
+        {
+          badgeCount: 0,
+          earnedBadges: [],
+        },
+        streakCount,
+      )
     }
 
     const awarded = await this.badges.awardBoardBadges({
@@ -1147,10 +1464,15 @@ export class BoardsService {
       cells,
     })
 
-    return toBoardCompletionCloseResponse(board, cells, {
-      badgeCount: awarded.badgeCount,
-      earnedBadges: awarded.earnedBadges,
-    })
+    return toBoardCompletionCloseResponse(
+      board,
+      cells,
+      {
+        badgeCount: awarded.badgeCount,
+        earnedBadges: awarded.earnedBadges,
+      },
+      streakCount,
+    )
   }
 
   private async resolveAlreadyEndedClose(
@@ -1159,12 +1481,21 @@ export class BoardsService {
     cells: readonly BoardCellRow[],
   ) {
     const customization = computeBoardCustomization(board, cells)
+    const streakCount =
+      board.end_reason === 'completed'
+        ? await this.computeStreakEndingAt(userId, boardDailyDate(board))
+        : 0
 
     if (!customization.badgeEligible) {
-      return toBoardCompletionCloseResponse(board, cells, {
-        badgeCount: 0,
-        earnedBadges: [],
-      })
+      return toBoardCompletionCloseResponse(
+        board,
+        cells,
+        {
+          badgeCount: 0,
+          earnedBadges: [],
+        },
+        streakCount,
+      )
     }
 
     // Self-heal: idempotently re-attempt minting (RPC on-conflict makes this
@@ -1175,13 +1506,18 @@ export class BoardsService {
     const badgesByBoard = await this.badges.getBoardBadges(userId, [board.id])
     const boardBadges = badgesByBoard.get(board.id) ?? []
 
-    return toBoardCompletionCloseResponse(board, cells, {
-      badgeCount: boardBadges.length,
-      earnedBadges: boardBadges.map((badge) => ({
-        ...badge,
-        isFirstEarn: false,
-      })),
-    })
+    return toBoardCompletionCloseResponse(
+      board,
+      cells,
+      {
+        badgeCount: boardBadges.length,
+        earnedBadges: boardBadges.map((badge) => ({
+          ...badge,
+          isFirstEarn: false,
+        })),
+      },
+      streakCount,
+    )
   }
 
   async updateBoardTitle(
@@ -1202,7 +1538,7 @@ export class BoardsService {
       }
     }
 
-    const now = new Date().toISOString()
+    const now = this.now().toISOString()
     const { data, error } = await this.admin
       .from('boards')
       .update({ title: input.title, updated_at: now })
@@ -1213,9 +1549,11 @@ export class BoardsService {
       .maybeSingle()
 
     if (error) throw error
-    const updated = data as
-      | { id: string; title: string | null; updated_at: string | null }
-      | null
+    const updated = data as {
+      id: string
+      title: string | null
+      updated_at: string | null
+    } | null
     if (!updated) throw new NotFoundException('Board not found.')
 
     return {
@@ -1277,7 +1615,7 @@ export class BoardsService {
     }
     const validatedSnapshot = parsed.data as MissionSnapshot
 
-    const now = new Date().toISOString()
+    const now = this.now().toISOString()
     const update: Record<string, unknown> = {
       mission_snapshot: validatedSnapshot,
       mission_label: input.title,
@@ -1372,13 +1710,16 @@ export class BoardsService {
       throw new ConflictException('Original mission snapshot is unavailable.')
     }
 
-    if (input.cellId !== cell.cell_id && input.cellId !== cell.original_cell_id) {
+    if (
+      input.cellId !== cell.cell_id &&
+      input.cellId !== cell.original_cell_id
+    ) {
       throw new BadRequestException('cellId must match the board position.')
     }
 
     const restoredSnapshot = cell.original_mission_snapshot
     const restoredCellId = cell.original_cell_id ?? cell.cell_id
-    const now = new Date().toISOString()
+    const now = this.now().toISOString()
 
     const { error: cellError } = await this.admin
       .from('board_cells')
@@ -1438,7 +1779,7 @@ export class BoardsService {
   }
 
   async deleteUserBoard(userId: string, boardId: string) {
-    const now = new Date().toISOString()
+    const now = this.now().toISOString()
     const { data, error } = await this.admin
       .from('boards')
       .update({ deleted_at: now, updated_at: now })
@@ -1455,21 +1796,8 @@ export class BoardsService {
     await this.deleteActiveUserBoardsForClient(userId)
   }
 
-  async getLatestUserBoardSession(userId: string) {
-    const { data: board, error: boardError } = await this.admin
-      .from('boards')
-      .select(BOARD_HISTORY_SELECT)
-      .eq('user_id', userId)
-      .is('ended_at', null)
-      .is('deleted_at', null)
-      .not('client_session_id', 'is', null)
-      .not('cell_ids', 'is', null)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (boardError) throw boardError
-    const row = board as BoardRow | null
+  async getActiveUserBoardState(userId: string) {
+    const row = await this.getLatestOpenBoard(userId)
     if (
       !row ||
       !isRestorableBoardMode(row.mode) ||
@@ -1478,9 +1806,54 @@ export class BoardsService {
       typeof row.free_position !== 'number' ||
       !row.cell_ids?.length
     ) {
-      return null
+      if (row) {
+        await this.deleteMalformedOpenBoard(userId, row.id)
+      }
+      return {
+        session: null,
+        lastResult: await this.getLastBoardResult(userId),
+        canStartToday: await this.canStartToday(userId),
+      }
     }
 
+    const dailyDate = boardDailyDate(row)
+    const lifecycle = computeLifecycle(dailyDate, this.now())
+
+    if (this.dailyBingoEnabled() && lifecycle.state === 'expired') {
+      const lastResult = await this.closeExpiredBoard(userId, row)
+      return {
+        session: null,
+        lastResult: lastResult ?? (await this.getLastBoardResult(userId)),
+        canStartToday: await this.canStartToday(userId),
+      }
+    }
+
+    const session = await this.getBoardSessionFromRow(userId, row, lifecycle)
+    if (!session) {
+      await this.deleteMalformedOpenBoard(userId, row.id)
+      return {
+        session: null,
+        lastResult: await this.getLastBoardResult(userId),
+        canStartToday: await this.canStartToday(userId),
+      }
+    }
+
+    return {
+      session,
+      lastResult: null,
+      canStartToday: false,
+    }
+  }
+
+  async getLatestUserBoardSession(userId: string) {
+    return (await this.getActiveUserBoardState(userId)).session
+  }
+
+  private async getBoardSessionFromRow(
+    userId: string,
+    row: BoardRow,
+    lifecycle: { state: BoardLifecycle; graceUntil: Date },
+  ) {
     const cells = await this.getBoardCellsForBoard(row.id)
     const clipIds = cells
       .map((cell) => cell.clip_id)
@@ -1537,12 +1910,20 @@ export class BoardsService {
       )
     ).filter(Boolean)
 
+    const cellIds = row.cell_ids ?? []
+    if (!cellIds.length) return null
+
     if (
       boardKind === 'mission' &&
-      row.cell_ids.some((_, position) => !snapshotsByPosition.get(position))
+      cellIds.some((_, position) => !snapshotsByPosition.get(position))
     ) {
       return null
     }
+
+    const summary = summarizeBoardCompletion(row, cells)
+    const dailyDate = boardDailyDate(row)
+    const streakDate = previousKstDate(dailyDate)
+    const streakCount = await this.computeStreakEndingAt(userId, streakDate)
 
     return {
       version: 4,
@@ -1553,11 +1934,11 @@ export class BoardsService {
       nickname: row.nickname,
       title: boardTitleFor(row),
       description: boardDescriptionFor(row),
-      createdAt: row.created_at ?? new Date().toISOString(),
-      updatedAt: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+      createdAt: row.created_at ?? this.now().toISOString(),
+      updatedAt: row.updated_at ?? row.created_at ?? this.now().toISOString(),
       freePosition: row.free_position,
-      cellIds: row.cell_ids,
-      missionSnapshots: row.cell_ids.map((cellId, position) =>
+      cellIds,
+      missionSnapshots: cellIds.map((cellId, position) =>
         boardKind === 'custom'
           ? (snapshotsByPosition.get(position) ??
             defaultMissionSnapshot(cellId))
@@ -1566,64 +1947,16 @@ export class BoardsService {
       markedPositions: Array.from(markedPositions).sort((a, b) => a - b),
       clips,
       endedAt: null,
+      lifecycle: lifecycle.state,
+      dailyDate,
+      graceUntil: lifecycle.graceUntil.toISOString(),
+      rerollCount: boardRerollCount(row),
+      rerollLimit: DAILY_REROLL_LIMIT,
+      rerollsRemaining: Math.max(0, DAILY_REROLL_LIMIT - boardRerollCount(row)),
+      endReason: row.end_reason ?? null,
+      streakCount,
+      completedCells: summary.completedCount,
     }
-  }
-
-  async adoptGuestBoardSession(params: {
-    userId: string
-    session: BoardSessionInput
-  }) {
-    if (params.session.boardId) {
-      const existing = await this.getExistingUserBoardForSession(
-        params.userId,
-        params.session.boardId,
-        params.session.sessionId,
-      )
-
-      return existing ? params.session : null
-    }
-
-    const boardId = await this.ensureUserBoard(params.userId, {
-      clientBoardSessionId: params.session.sessionId,
-      mode: params.session.mode,
-      boardKind:
-        params.session.version === 4 ? params.session.boardKind : 'custom',
-      nickname: params.session.nickname,
-      title:
-        params.session.version === 4
-          ? params.session.title
-          : params.session.nickname,
-      description:
-        params.session.version === 4 ? params.session.description : undefined,
-      freePosition: params.session.freePosition,
-      cellIds: params.session.cellIds,
-      missionSnapshots:
-        params.session.version === 4 ? params.session.missionSnapshots : [],
-    })
-
-    await this.syncUserBoardMarkedPositions(boardId, params.session)
-    const now = new Date().toISOString()
-    const adoptedPhotos =
-      params.session.version === 2
-        ? await this.adoptSessionPhotos(params.userId, boardId, params.session)
-        : []
-    const adoptedClips =
-      params.session.version === 3 || params.session.version === 4
-        ? await this.adoptSessionClips(params.userId, boardId, params.session)
-        : []
-
-    const { error } = await this.admin
-      .from('boards')
-      .update({ updated_at: now })
-      .eq('id', boardId)
-      .eq('user_id', params.userId)
-    if (error) throw error
-
-    if (params.session.version === 3 || params.session.version === 4) {
-      return { ...params.session, boardId, clips: adoptedClips, updatedAt: now }
-    }
-
-    return { ...params.session, boardId, photos: adoptedPhotos, updatedAt: now }
   }
 
   private async createHistoryMediaPreviews(
@@ -1717,6 +2050,7 @@ export class BoardsService {
       .select(BOARD_HISTORY_SELECT)
       .eq('id', boardId)
       .eq('user_id', userId)
+      .eq('mode', SUPPORTED_BOARD_MODE)
       .is('deleted_at', null)
       .maybeSingle()
 
@@ -1829,7 +2163,7 @@ export class BoardsService {
   ) {
     if (!session.markedPositions.length) return
 
-    const now = new Date().toISOString()
+    const now = this.now().toISOString()
     const rows = session.markedPositions.flatMap((position) => {
       const cellId = session.cellIds[position]
       if (!cellId) return []
@@ -1859,11 +2193,12 @@ export class BoardsService {
     userId: string,
     exceptClientSessionId?: string,
   ) {
-    const now = new Date().toISOString()
+    const now = this.now().toISOString()
     let query = this.admin
       .from('boards')
       .update({ deleted_at: now, updated_at: now })
       .eq('user_id', userId)
+      .eq('mode', SUPPORTED_BOARD_MODE)
       .is('ended_at', null)
       .is('deleted_at', null)
       .not('client_session_id', 'is', null)
@@ -1880,139 +2215,24 @@ export class BoardsService {
   private async deleteOtherActiveUserBoards(
     userId: string,
     clientSessionId: string,
+    dailyDate?: string | null,
   ) {
-    await this.deleteActiveUserBoardsForClient(userId, clientSessionId)
-  }
+    if (!this.dailyBingoEnabled() || !dailyDate) {
+      await this.deleteActiveUserBoardsForClient(userId, clientSessionId)
+      return
+    }
 
-  private async getExistingUserBoardForSession(
-    userId: string,
-    boardId: string,
-    clientSessionId: string,
-  ) {
-    const { data, error } = await this.admin
+    const now = this.now().toISOString()
+    const { error } = await this.admin
       .from('boards')
-      .select('id')
-      .eq('id', boardId)
+      .update({ deleted_at: now, updated_at: now })
       .eq('user_id', userId)
-      .eq('client_session_id', clientSessionId)
+      .eq('daily_date', dailyDate)
       .is('ended_at', null)
       .is('deleted_at', null)
-      .maybeSingle()
+      .not('client_session_id', 'is', null)
+      .neq('client_session_id', clientSessionId)
 
     if (error) throw error
-    return data
-  }
-
-  private async adoptSessionPhotos(
-    userId: string,
-    boardId: string,
-    session: Extract<BoardSessionInput, { version: 2 }>,
-  ) {
-    const adopted = []
-    const now = new Date().toISOString()
-
-    for (const photo of session.photos) {
-      const cellId = session.cellIds[photo.position] ?? photo.cellId
-      let userPhotoId: string | null = null
-
-      if (photo.ownerKind === 'user') {
-        const { data } = await this.admin
-          .from('photos')
-          .select('id')
-          .eq('id', photo.photoId)
-          .eq('user_id', userId)
-          .is('deleted_at', null)
-          .maybeSingle()
-        userPhotoId = data?.id ?? null
-      } else {
-        const { data } = await this.admin
-          .from('guest_photo_uploads')
-          .select('promoted_photo_id')
-          .eq('id', photo.photoId)
-          .eq('promoted_user_id', userId)
-          .not('promoted_photo_id', 'is', null)
-          .maybeSingle()
-        userPhotoId = data?.promoted_photo_id ?? null
-      }
-
-      if (!userPhotoId) continue
-
-      const { error } = await this.admin
-        .from('board_cells')
-        .update({
-          cell_id: cellId,
-          photo_id: userPhotoId,
-          clip_id: null,
-          marked_at: now,
-          completed_at: now,
-          completion_type: 'photo',
-        })
-        .eq('board_id', boardId)
-        .eq('position', photo.position)
-
-      if (error) throw error
-      adopted.push({
-        ...photo,
-        cellId,
-        photoId: userPhotoId,
-        ownerKind: 'user',
-      })
-    }
-
-    return adopted
-  }
-
-  private async adoptSessionClips(
-    userId: string,
-    boardId: string,
-    session: Extract<BoardSessionInput, { version: 3 | 4 }>,
-  ) {
-    const adopted = []
-    const now = new Date().toISOString()
-
-    for (const clip of session.clips) {
-      const cellId = session.cellIds[clip.position] ?? clip.cellId
-      let userClipId: string | null = null
-
-      if (clip.ownerKind === 'user') {
-        const { data } = await this.admin
-          .from('clips')
-          .select('id')
-          .eq('id', clip.clipId)
-          .eq('user_id', userId)
-          .is('deleted_at', null)
-          .maybeSingle()
-        userClipId = data?.id ?? null
-      } else {
-        const { data } = await this.admin
-          .from('guest_clip_uploads')
-          .select('promoted_clip_id')
-          .eq('id', clip.clipId)
-          .eq('promoted_user_id', userId)
-          .not('promoted_clip_id', 'is', null)
-          .maybeSingle()
-        userClipId = data?.promoted_clip_id ?? null
-      }
-
-      if (!userClipId) continue
-
-      const { error } = await this.admin
-        .from('board_cells')
-        .update({
-          cell_id: cellId,
-          photo_id: null,
-          clip_id: userClipId,
-          marked_at: now,
-          completed_at: now,
-          completion_type: 'clip',
-        })
-        .eq('board_id', boardId)
-        .eq('position', clip.position)
-
-      if (error) throw error
-      adopted.push({ ...clip, cellId, clipId: userClipId, ownerKind: 'user' })
-    }
-
-    return adopted
   }
 }

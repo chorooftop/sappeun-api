@@ -1,12 +1,12 @@
 # Supabase 스키마 스냅샷 (Phase 0 진단 결과)
 
 ```
-조사일:   2026-05-31 KST (0001 기준) / 0006 추가: 2026-06-05 / 0019 추가: 2026-06-10
+조사일:   2026-05-31 KST (0001 기준) / 0006 추가: 2026-06-05 / 0020 추가: 2026-06-10
 방법:     PostgREST OpenAPI + 직접 SQL 진단(psql, ap-south-1 풀러)
 프로젝트:  wtptvgxyqkqqsfkdsoox (리전: ap-south-1)
 정식 덤프: supabase/migrations/0001_remote_baseline.sql (초기화 기준 schema-only baseline, 1150줄)
 진단 도구: scripts/introspect-schema.mjs(REST), scripts/introspect.sql(psql)
-최신 목표 migration: 0019_mission_category_counts_view.sql
+최신 목표 migration: 0020_daily_bingo.sql
 대기 중 migration: 없음
 ```
 
@@ -58,6 +58,13 @@
 > `badge_id` 대신 version-agnostic `mission_id`를 FK로 사용한다. `award_board_badges(uuid,uuid,text[])`
 > 시그니처는 유지하되 text[]를 mission_id[]로 해석한다. `mission_badges`는 0018에서 drop되고,
 > `mission_categories.count`는 0019에서 `mission_category_counts` view로 파생한다.
+>
+> **0020 추가 (2026-06-10).** 일일 빙고 3x3 cutover를 위해 `boards.daily_date`,
+> `reroll_count`, `end_reason`, `pre_0020_hidden`을 추가한다. `daily_date`는
+> `(created_at at time zone 'Asia/Seoul')::date`로 백필하고 5x5 보드는 `deleted_at`+
+> `pre_0020_hidden=true`로 soft-hide한다. `(user_id, daily_date)` 부분 유니크 인덱스
+> `boards_user_daily_uidx`로 같은 service-day 중복을 막고, `reroll_board(uuid,uuid,int)`
+> RPC가 원자적 리롤 카운터 증가를 담당한다.
 
 ---
 
@@ -69,7 +76,8 @@ board_badges, user_badges`
 뷰: `shared_board_view`, `mission_category_counts`
 함수: `require_current_consents_for_signup()`, `set_updated_at()`,
 `confirm_user_photo_upload()`, `confirm_user_clip_upload()`,
-`award_board_badges(uuid, uuid, text[])` *(0006 추가, security definer, service_role 전용)*
+`award_board_badges(uuid, uuid, text[])` *(0006 추가, security definer, service_role 전용)*,
+`reroll_board(uuid, uuid, integer)` *(0020 추가, security definer, service_role 전용)*
 
 ## media / mission board 기준 스키마 (현행 목표)
 

@@ -1,16 +1,14 @@
 import { Module } from '@nestjs/common'
 
 import { BadgesModule } from '@/badges/badges.module'
-import {
-  BoardsCompatibilityController,
-  BoardsController,
-} from '@/boards/boards.controller'
+import { BoardsController } from '@/boards/boards.controller'
 import { BoardsService } from '@/boards/boards.service'
+import { ClockService } from '@/common/time/clock.service'
 
 @Module({
   imports: [BadgesModule],
-  controllers: [BoardsController, BoardsCompatibilityController],
-  providers: [BoardsService],
+  controllers: [BoardsController],
+  providers: [BoardsService, ClockService],
   exports: [BoardsService],
 })
 export class BoardsModule {}

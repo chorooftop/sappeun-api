@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  clipPreviewSchema,
+  confirmClipUploadSchema,
+  confirmPhotoUploadSchema,
+  photoPreviewSchema,
   presignClipUploadSchema,
   presignPhotoUploadSchema,
   updateClipDescriptionSchema,
@@ -83,7 +87,7 @@ describe('updateClipDescriptionSchema', () => {
   it('rejects board snapshots with mismatched mission ids', () => {
     const cellIds = cells(9)
     const parsed = updateClipDescriptionSchema.safeParse({
-      ownerKind: 'guest',
+      ownerKind: 'user',
       description: 'Updated',
       boardSnapshot: {
         boardKind: 'mission',
@@ -98,5 +102,41 @@ describe('updateClipDescriptionSchema', () => {
     })
 
     expect(parsed.success).toBe(false)
+  })
+})
+
+describe('media ownerKind schemas', () => {
+  it('rejects guest-owned media operations', () => {
+    const photoId = '00000000-0000-4000-8000-000000000001'
+    const clipId = '00000000-0000-4000-8000-000000000002'
+
+    expect(
+      confirmPhotoUploadSchema.safeParse({
+        photoId,
+        ownerKind: 'guest',
+      }).success,
+    ).toBe(false)
+    expect(
+      photoPreviewSchema.safeParse({
+        photos: [{ photoId, ownerKind: 'guest' }],
+      }).success,
+    ).toBe(false)
+    expect(
+      confirmClipUploadSchema.safeParse({
+        clipId,
+        ownerKind: 'guest',
+      }).success,
+    ).toBe(false)
+    expect(
+      clipPreviewSchema.safeParse({
+        clips: [{ clipId, ownerKind: 'guest' }],
+      }).success,
+    ).toBe(false)
+    expect(
+      updateClipDescriptionSchema.safeParse({
+        ownerKind: 'guest',
+        description: 'Updated',
+      }).success,
+    ).toBe(false)
   })
 })

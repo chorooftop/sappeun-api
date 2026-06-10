@@ -10,14 +10,11 @@ import {
   Patch,
   Post,
   Query,
-  Req,
   UseGuards,
 } from '@nestjs/common'
 import type { User } from '@supabase/supabase-js'
-import type { Request } from 'express'
 
 import { CurrentUser } from '@/auth/current-user.decorator'
-import { AuthService } from '@/auth/auth.service'
 import { SupabaseAuthGuard } from '@/auth/supabase-auth.guard'
 import { BoardsService } from '@/boards/boards.service'
 import {
@@ -39,7 +36,7 @@ import {
 import { ZodValidationPipe } from '@/common/pipes/zod-validation.pipe'
 
 function assertBoardPosition(position: number) {
-  if (!Number.isInteger(position) || position < 0 || position > 24) {
+  if (!Number.isInteger(position) || position < 0 || position > 8) {
     throw new BadRequestException('Invalid position.')
   }
   return position
@@ -60,10 +57,7 @@ function parseBoardListQuery(query: unknown): BoardListQueryInput {
 
 @Controller('boards')
 export class BoardsController {
-  constructor(
-    private readonly authService: AuthService,
-    private readonly boardsService: BoardsService,
-  ) {}
+  constructor(private readonly boardsService: BoardsService) {}
 
   @Get()
   @UseGuards(SupabaseAuthGuard)
@@ -79,17 +73,13 @@ export class BoardsController {
   @Get('active')
   @UseGuards(SupabaseAuthGuard)
   async active(@CurrentUser() user: User) {
-    return {
-      session: await this.boardsService.getLatestUserBoardSession(user.id),
-    }
+    return this.boardsService.getActiveUserBoardState(user.id)
   }
 
   @Get('current')
   @UseGuards(SupabaseAuthGuard)
   async current(@CurrentUser() user: User) {
-    return {
-      session: await this.boardsService.getLatestUserBoardSession(user.id),
-    }
+    return this.boardsService.getActiveUserBoardState(user.id)
   }
 
   @Delete('current')
@@ -100,27 +90,12 @@ export class BoardsController {
   }
 
   @Post('session')
-  async ensureSession(
-    @Req() request: Request,
-    @Body(new ZodValidationPipe(boardSessionSchema)) session: BoardSessionInput,
-  ) {
-    const { user } = await this.authService.resolveUser(request)
-    if (!user) return { boardId: null }
-    return this.boardsService.ensureUserBoardFromSession(user.id, session)
-  }
-
-  @Post('adopt-guest-session')
   @UseGuards(SupabaseAuthGuard)
-  async adoptGuestSession(
+  async ensureSession(
     @CurrentUser() user: User,
     @Body(new ZodValidationPipe(boardSessionSchema)) session: BoardSessionInput,
   ) {
-    return {
-      session: await this.boardsService.adoptGuestBoardSession({
-        userId: user.id,
-        session,
-      }),
-    }
+    return this.boardsService.ensureUserBoardFromSession(user.id, session)
   }
 
   @Get(':boardId')
@@ -148,6 +123,12 @@ export class BoardsController {
       ok: true,
       board: await this.boardsService.endUserBoard(user.id, boardId, body),
     }
+  }
+
+  @Post(':boardId/reroll')
+  @UseGuards(SupabaseAuthGuard)
+  async reroll(@CurrentUser() user: User, @Param('boardId') boardId: string) {
+    return this.boardsService.ackBoardReroll(user.id, boardId)
   }
 
   @Patch(':boardId/title')
@@ -226,132 +207,6 @@ export class BoardsController {
     @Body(new ZodValidationPipe(replaceBoardCellSchema))
     input: { cellId: string },
   ) {
-    await this.boardsService.replaceUserBoardCell({
-      userId: user.id,
-      boardId,
-      position: assertBoardPosition(position),
-      cellId: input.cellId,
-    })
-    return { ok: true }
-  }
-}
-
-@Controller('api/boards')
-export class BoardsCompatibilityController {
-  constructor(
-    private readonly authService: AuthService,
-    private readonly boardsService: BoardsService,
-  ) {}
-
-  @Get()
-  async list(@Req() request: Request, @Query() query: unknown) {
-    const user = await this.authService.requireUser(request)
-    return {
-      boards: await this.boardsService.listUserBoards(
-        user.id,
-        parseBoardListQuery(query),
-      ),
-    }
-  }
-
-  @Get('active')
-  async active(@Req() request: Request) {
-    const user = await this.authService.requireUser(request)
-    return {
-      session: await this.boardsService.getLatestUserBoardSession(user.id),
-    }
-  }
-
-  @Get('current')
-  async current(@Req() request: Request) {
-    const user = await this.authService.requireUser(request)
-    return {
-      session: await this.boardsService.getLatestUserBoardSession(user.id),
-    }
-  }
-
-  @Delete('current')
-  async deleteCurrent(@Req() request: Request) {
-    const user = await this.authService.requireUser(request)
-    await this.boardsService.deleteActiveUserBoards(user.id)
-    return { ok: true }
-  }
-
-  @Post('session')
-  async ensureSession(
-    @Req() request: Request,
-    @Body(new ZodValidationPipe(boardSessionSchema)) session: BoardSessionInput,
-  ) {
-    const { user } = await this.authService.resolveUser(request)
-    if (!user) return { boardId: null }
-    return this.boardsService.ensureUserBoardFromSession(user.id, session)
-  }
-
-  @Post('adopt-guest-session')
-  async adoptGuestSession(
-    @Req() request: Request,
-    @Body(new ZodValidationPipe(boardSessionSchema)) session: BoardSessionInput,
-  ) {
-    const user = await this.authService.requireUser(request)
-    return {
-      session: await this.boardsService.adoptGuestBoardSession({
-        userId: user.id,
-        session,
-      }),
-    }
-  }
-
-  @Get(':boardId')
-  async detail(@Req() request: Request, @Param('boardId') boardId: string) {
-    const user = await this.authService.requireUser(request)
-    const board = await this.boardsService.getUserBoardDetail(user.id, boardId)
-    if (!board) throw new NotFoundException('Board not found.')
-    return { board }
-  }
-
-  @Delete(':boardId')
-  async delete(@Req() request: Request, @Param('boardId') boardId: string) {
-    const user = await this.authService.requireUser(request)
-    return { ok: await this.boardsService.deleteUserBoard(user.id, boardId) }
-  }
-
-  @Post(':boardId/end')
-  async end(@Req() request: Request, @Param('boardId') boardId: string) {
-    const user = await this.authService.requireUser(request)
-    return {
-      ok: true,
-      board: await this.boardsService.endUserBoard(user.id, boardId),
-    }
-  }
-
-  @Patch(':boardId/cells/:position')
-  async markCell(
-    @Req() request: Request,
-    @Param('boardId') boardId: string,
-    @Param('position', ParseIntPipe) position: number,
-    @Body(new ZodValidationPipe(markBoardCellSchema))
-    input: { cellId: string; marked: boolean },
-  ) {
-    const user = await this.authService.requireUser(request)
-    await this.boardsService.markUserBoardCell({
-      userId: user.id,
-      boardId,
-      position: assertBoardPosition(position),
-      cellId: input.cellId,
-      marked: input.marked,
-    })
-    return { ok: true }
-  }
-
-  @Post(':boardId/cells/:position')
-  async replaceCell(
-    @Req() request: Request,
-    @Param('boardId') boardId: string,
-    @Param('position', ParseIntPipe) position: number,
-    @Body(new ZodValidationPipe(replaceBoardCellSchema))
-    input: { cellId: string },
-  ) {
-    const user = await this.authService.requireUser(request)
     await this.boardsService.replaceUserBoardCell({
       userId: user.id,
       boardId,

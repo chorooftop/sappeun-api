@@ -69,6 +69,36 @@ describe('boardSessionSchema', () => {
     expect(parsed.success).toBe(false)
   })
 
+  it('rejects 5x5 sessions at the mode field', () => {
+    const cellIds = cells(9)
+    const parsed = boardSessionSchema.safeParse({
+      ...validV4Session(),
+      mode: '5x5',
+      cellIds,
+      missionSnapshots: missionSnapshots(cellIds),
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
+  it('rejects guest-owned persisted media in board sessions', () => {
+    const parsed = boardSessionSchema.safeParse({
+      ...validV4Session(),
+      clips: [
+        {
+          position: 1,
+          cellId: 'cell-1',
+          clipId: '018f7d38-0dd4-4d77-981e-36e85f0b2a42',
+          ownerKind: 'guest',
+          durationMs: 1200,
+          uploadStatus: 'uploaded',
+        },
+      ],
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
   it('rejects mismatched clip position and cell id', () => {
     const parsed = boardSessionSchema.safeParse({
       ...validV4Session(),
@@ -164,9 +194,9 @@ describe('endBoardSchema', () => {
   })
 
   it('rejects a title that exceeds 24 characters', () => {
-    expect(
-      endBoardSchema.safeParse({ title: 'a'.repeat(25) }).success,
-    ).toBe(false)
+    expect(endBoardSchema.safeParse({ title: 'a'.repeat(25) }).success).toBe(
+      false,
+    )
   })
 
   it('rejects a title that is empty after trimming', () => {
@@ -222,7 +252,10 @@ describe('updateBoardTitleSchema', () => {
 describe('editBoardCellMissionSchema', () => {
   it('accepts required fields only', () => {
     expect(
-      editBoardCellMissionSchema.parse({ cellId: 'n01', title: 'Find a flower' }),
+      editBoardCellMissionSchema.parse({
+        cellId: 'n01',
+        title: 'Find a flower',
+      }),
     ).toEqual({ cellId: 'n01', title: 'Find a flower' })
   })
 
@@ -259,9 +292,10 @@ describe('editBoardCellMissionSchema', () => {
 
   it('accepts a title at the 40-character boundary', () => {
     const title = 'c'.repeat(40)
-    expect(
-      editBoardCellMissionSchema.parse({ cellId: 'n01', title }),
-    ).toEqual({ cellId: 'n01', title })
+    expect(editBoardCellMissionSchema.parse({ cellId: 'n01', title })).toEqual({
+      cellId: 'n01',
+      title,
+    })
   })
 
   it('rejects a title that exceeds 40 characters', () => {

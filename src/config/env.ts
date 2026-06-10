@@ -40,6 +40,10 @@ export const envSchema = z.object({
   R2_REGION: z.preprocess(emptyToUndefined, z.string().default('auto')),
   R2_OWNER_HASH_SECRET: z.preprocess(emptyToUndefined, z.string().min(16)),
   CRON_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
+  DAILY_BINGO_ENABLED: z.preprocess(
+    emptyToUndefined,
+    z.enum(['true', 'false']).optional().default('true'),
+  ),
 })
 
 export type AppEnv = z.infer<typeof envSchema>

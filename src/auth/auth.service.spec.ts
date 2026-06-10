@@ -1,15 +1,14 @@
+import { UnauthorizedException } from '@nestjs/common'
 import { describe, expect, it } from 'vitest'
 
-import { normalizeGuestSessionId } from '@/auth/auth.service'
+import { AuthService } from '@/auth/auth.service'
 
-describe('normalizeGuestSessionId', () => {
-  it('trims valid UUID guest session ids', () => {
-    expect(
-      normalizeGuestSessionId(' 018f7d38-0dd4-4d77-981e-36e85f0b2a42 '),
-    ).toBe('018f7d38-0dd4-4d77-981e-36e85f0b2a42')
-  })
+describe('AuthService.requireUser', () => {
+  it('rejects requests without a bearer token', async () => {
+    const service = new AuthService({} as never)
 
-  it('rejects non-UUID ids', () => {
-    expect(normalizeGuestSessionId('guest_local_identity')).toBeNull()
+    await expect(
+      service.requireUser({ headers: {} } as never),
+    ).rejects.toBeInstanceOf(UnauthorizedException)
   })
 })

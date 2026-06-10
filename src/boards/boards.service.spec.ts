@@ -1,7 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-} from '@nestjs/common'
+import { BadRequestException, ConflictException } from '@nestjs/common'
 import { describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -40,6 +37,9 @@ function baseBoard(overrides: Partial<BoardRow> = {}): BoardRow {
     updated_at: '2026-06-03T00:10:00.000Z',
     ended_at: null,
     deleted_at: null,
+    daily_date: '2026-06-03',
+    reroll_count: 0,
+    end_reason: null,
     ...overrides,
   }
 }
@@ -84,6 +84,9 @@ function makeQuery(label: string, result: QueryResult, events: QueryEvent[]) {
       return query
     },
     in() {
+      return query
+    },
+    lte() {
       return query
     },
     is() {
@@ -224,12 +227,18 @@ describe('BoardsService.endUserBoard', () => {
       ...board,
       ended_at: '2026-06-03T00:30:00.000Z',
       updated_at: '2026-06-03T00:30:00.000Z',
+      end_reason: 'completed' as const,
     }
     const admin = makeAdmin(
       {
         boards: [
           makeQuery('select-board', { data: board, error: null }, events),
           makeQuery('end-board', { data: endedBoard, error: null }, events),
+          makeQuery(
+            'streak',
+            { data: [{ daily_date: '2026-06-03' }], error: null },
+            events,
+          ),
         ],
         board_cells: [
           makeQuery(
@@ -250,7 +259,14 @@ describe('BoardsService.endUserBoard', () => {
     await expect(service.endUserBoard('user-1', 'board-1')).resolves.toEqual({
       id: 'board-1',
       title: '산책 빙고',
+      dailyDate: '2026-06-03',
       endedAt: '2026-06-03T00:30:00.000Z',
+      endReason: 'completed',
+      rerollCount: 0,
+      rerollLimit: 3,
+      rerollsRemaining: 3,
+      streakCount: 1,
+      completedCells: 9,
       completedAt: '2026-06-03T00:30:00.000Z',
       completedCount: 9,
       totalTargetCount: 9,
@@ -270,6 +286,7 @@ describe('BoardsService.endUserBoard', () => {
       label: 'end-board',
       payload: expect.objectContaining({
         ended_at: expect.any(String),
+        end_reason: 'completed',
         updated_at: expect.any(String),
       }),
     })
@@ -298,6 +315,196 @@ describe('BoardsService.endUserBoard', () => {
       service.endUserBoard('user-1', 'board-1'),
     ).rejects.toBeInstanceOf(BadRequestException)
     expect(events.some((event) => event.type === 'update')).toBe(false)
+  })
+})
+
+describe('BoardsService.getActiveUserBoardState', () => {
+  const expiredClock = {
+    now: () => new Date('2026-06-10T16:01:00.000Z'),
+  }
+
+  it('lazy-closes an expired board with user completion evidence', async () => {
+    const events: QueryEvent[] = []
+    const board = baseBoard({ daily_date: '2026-06-10' })
+    const closedBoard = {
+      ...board,
+      ended_at: '2026-06-10T16:01:00.000Z',
+      updated_at: '2026-06-10T16:01:00.000Z',
+      end_reason: 'auto_grace_expired' as const,
+    }
+    const admin = makeAdmin(
+      {
+        boards: [
+          makeQuery('latest-open', { data: board, error: null }, events),
+          makeQuery('lazy-close', { data: closedBoard, error: null }, events),
+          makeQuery('today-board', { data: null, error: null }, events),
+          makeQuery('latest-open-after', { data: null, error: null }, events),
+        ],
+        board_cells: [
+          makeQuery(
+            'expired-cells',
+            {
+              data: [
+                cell(0, {
+                  completed_at: '2026-06-10T01:00:00.000Z',
+                  completion_type: 'no_media',
+                }),
+              ],
+              error: null,
+            },
+            events,
+          ),
+        ],
+      },
+      events,
+    )
+    const service = new BoardsService(
+      {} as never,
+      { adminClient: admin } as never,
+      makeBadges() as never,
+      expiredClock,
+    )
+
+    await expect(service.getActiveUserBoardState('user-1')).resolves.toEqual({
+      session: null,
+      canStartToday: true,
+      lastResult: {
+        boardId: 'board-1',
+        dailyDate: '2026-06-10',
+        endReason: 'auto_grace_expired',
+        completedCells: 2,
+        streakCount: 0,
+      },
+    })
+    expect(events).toContainEqual({
+      type: 'update',
+      label: 'lazy-close',
+      payload: expect.objectContaining({
+        end_reason: 'auto_grace_expired',
+      }),
+    })
+  })
+
+  it('deletes an expired board when only the free cell is completed', async () => {
+    const events: QueryEvent[] = []
+    const board = baseBoard({ daily_date: '2026-06-10' })
+    const admin = makeAdmin(
+      {
+        boards: [
+          makeQuery('latest-open', { data: board, error: null }, events),
+          makeQuery('lazy-delete', { data: null, error: null }, events),
+          makeQuery('last-result', { data: null, error: null }, events),
+          makeQuery('today-board', { data: null, error: null }, events),
+          makeQuery('latest-open-after', { data: null, error: null }, events),
+        ],
+        board_cells: [
+          makeQuery('expired-cells', { data: [], error: null }, events),
+        ],
+      },
+      events,
+    )
+    const service = new BoardsService(
+      {} as never,
+      { adminClient: admin } as never,
+      makeBadges() as never,
+      expiredClock,
+    )
+
+    await expect(service.getActiveUserBoardState('user-1')).resolves.toEqual({
+      session: null,
+      canStartToday: true,
+      lastResult: null,
+    })
+    expect(events).toContainEqual({
+      type: 'update',
+      label: 'lazy-delete',
+      payload: expect.objectContaining({
+        deleted_at: expect.any(String),
+      }),
+    })
+  })
+
+  it('soft-deletes malformed open boards before allowing a new daily start', async () => {
+    const events: QueryEvent[] = []
+    const board = baseBoard({ board_kind: 'mission' })
+    const admin = makeAdmin(
+      {
+        boards: [
+          makeQuery('latest-open', { data: board, error: null }, events),
+          makeQuery('malformed-delete', { data: null, error: null }, events),
+          makeQuery('last-result', { data: null, error: null }, events),
+          makeQuery('today-board', { data: null, error: null }, events),
+          makeQuery('latest-open-after', { data: null, error: null }, events),
+        ],
+        board_cells: [
+          makeQuery(
+            'malformed-cells',
+            {
+              data: Array.from({ length: 9 }, (_, position) => cell(position)),
+              error: null,
+            },
+            events,
+          ),
+        ],
+      },
+      events,
+    )
+    const service = new BoardsService(
+      {} as never,
+      { adminClient: admin } as never,
+      makeBadges() as never,
+    )
+
+    await expect(service.getActiveUserBoardState('user-1')).resolves.toEqual({
+      session: null,
+      canStartToday: true,
+      lastResult: null,
+    })
+    expect(events).toContainEqual({
+      type: 'update',
+      label: 'malformed-delete',
+      payload: expect.objectContaining({
+        deleted_at: expect.any(String),
+      }),
+    })
+  })
+})
+
+describe('BoardsService.ackBoardReroll', () => {
+  it('returns the atomic reroll counter from the RPC', async () => {
+    const rpc = vi.fn(() =>
+      Promise.resolve({ data: [{ reroll_count: 2 }], error: null }),
+    )
+    const service = new BoardsService(
+      {} as never,
+      { adminClient: { rpc } } as never,
+      makeBadges() as never,
+    )
+
+    await expect(service.ackBoardReroll('user-1', 'board-1')).resolves.toEqual({
+      rerollCount: 2,
+      rerollLimit: 3,
+      rerollsRemaining: 1,
+    })
+    expect(rpc).toHaveBeenCalledWith('reroll_board', {
+      p_board_id: 'board-1',
+      p_user_id: 'user-1',
+      p_limit: 3,
+    })
+  })
+
+  it('maps empty RPC results to the reroll limit domain conflict', async () => {
+    const service = new BoardsService(
+      {} as never,
+      {
+        adminClient: { rpc: () => Promise.resolve({ data: [], error: null }) },
+      } as never,
+      makeBadges() as never,
+    )
+
+    await expect(
+      service.ackBoardReroll('user-1', 'board-1'),
+    ).rejects.toBeInstanceOf(ConflictException)
   })
 })
 
@@ -503,17 +710,19 @@ describe('BoardsService.endUserBoard with title + badges', () => {
       ...titledBoard,
       ended_at: '2026-06-03T00:30:00.000Z',
       updated_at: '2026-06-03T00:30:00.000Z',
+      end_reason: 'completed' as const,
     }
     const admin = makeAdmin(
       {
         boards: [
           makeQuery('select-board', { data: board, error: null }, events),
+          makeQuery('apply-title', { data: titledBoard, error: null }, events),
+          makeQuery('end-board', { data: endedBoard, error: null }, events),
           makeQuery(
-            'apply-title',
-            { data: titledBoard, error: null },
+            'streak',
+            { data: [{ daily_date: '2026-06-03' }], error: null },
             events,
           ),
-          makeQuery('end-board', { data: endedBoard, error: null }, events),
         ],
         board_cells: [
           makeQuery(
@@ -556,6 +765,9 @@ describe('BoardsService.endUserBoard with title + badges', () => {
       id: 'board-1',
       title: '비 오는 날 산책',
       endedAt: '2026-06-03T00:30:00.000Z',
+      endReason: 'completed',
+      streakCount: 1,
+      completedCells: 9,
       isFullyCompleted: true,
       customizationStatus: 'official',
       editedCellCount: 0,
@@ -590,12 +802,18 @@ describe('BoardsService.endUserBoard with title + badges', () => {
       customization_status: 'edited' as const,
       ended_at: '2026-06-03T00:30:00.000Z',
       updated_at: '2026-06-03T00:30:00.000Z',
+      end_reason: 'completed' as const,
     }
     const admin = makeAdmin(
       {
         boards: [
           makeQuery('select-board', { data: board, error: null }, events),
           makeQuery('end-board', { data: endedBoard, error: null }, events),
+          makeQuery(
+            'streak',
+            { data: [{ daily_date: '2026-06-03' }], error: null },
+            events,
+          ),
         ],
         board_cells: [
           makeQuery('select-cells', { data: cells, error: null }, events),
@@ -618,6 +836,7 @@ describe('BoardsService.endUserBoard with title + badges', () => {
       earnedBadges: [],
       editedCellCount: 1,
       customizationStatus: 'edited',
+      streakCount: 1,
     })
     // Edited board is ineligible -> no minting attempt is issued.
     expect(badges.awardBoardBadges).not.toHaveBeenCalled()
