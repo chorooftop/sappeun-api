@@ -36,3 +36,11 @@ and must never be hand-edited. To keep the two in sync:
 ## Runtime Boundary
 
 Flutter calls this API for privileged operations such as Cloudflare R2 presigned URLs, media confirmation, guest promotion, account deletion, and cleanup jobs. Supabase remains the Auth/Postgres provider.
+
+## Render Runtime Debugging
+
+Runtime failures are triaged from Render Events, Logs, and `/v1/health`.
+The app emits structured one-line logs for bootstrap, request completion, 5xx
+exceptions, and process-level failures. See
+[`plans/render-runtime-debugging.md`](plans/render-runtime-debugging.md) for the
+incident checklist.
