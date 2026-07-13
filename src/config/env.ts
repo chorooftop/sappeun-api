@@ -44,6 +44,31 @@ export const envSchema = z.object({
     emptyToUndefined,
     z.enum(['true', 'false']).optional().default('true'),
   ),
+  QA_AUTH_ENABLED: z.preprocess(
+    emptyToUndefined,
+    z.enum(['true', 'false']).optional().default('false'),
+  ),
+  QA_AUTH_ALLOW_PRODUCTION: z.preprocess(
+    emptyToUndefined,
+    z.enum(['true', 'false']).optional().default('false'),
+  ),
+  QA_AUTH_EMAIL: z.preprocess(emptyToUndefined, z.email().optional()),
+  QA_AUTH_PASSWORD: z.preprocess(
+    emptyToUndefined,
+    z.string().min(8).optional(),
+  ),
+  QA_AUTH_CODE_HASH: z.preprocess(
+    emptyToUndefined,
+    z.string().min(16).optional(),
+  ),
+  QA_AUTH_BIRTH_DATE: z.preprocess(
+    emptyToUndefined,
+    z.iso.date().optional().default('2000-01-01'),
+  ),
+  QA_AUTH_DISPLAY_NAME: z.preprocess(
+    emptyToUndefined,
+    z.string().min(1).max(40).optional().default('사뿐 QA'),
+  ),
 })
 
 export type AppEnv = z.infer<typeof envSchema>

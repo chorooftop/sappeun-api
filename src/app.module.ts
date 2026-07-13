@@ -9,6 +9,7 @@ import { HealthModule } from '@/health/health.module'
 import { JobsModule } from '@/jobs/jobs.module'
 import { MediaModule } from '@/media/media.module'
 import { MissionsModule } from '@/missions/missions.module'
+import { QaAuthModule } from '@/qa-auth/qa-auth.module'
 import { SharesModule } from '@/shares/shares.module'
 import { StorageModule } from '@/storage/storage.module'
 import { SupabaseModule } from '@/supabase/supabase.module'
@@ -30,6 +31,7 @@ import { UsersModule } from '@/users/users.module'
     MissionsModule,
     MediaModule,
     SharesModule,
+    QaAuthModule,
     JobsModule,
   ],
 })

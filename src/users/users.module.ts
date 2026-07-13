@@ -9,5 +9,6 @@ import { UsersService } from '@/users/users.service'
 @Module({
   controllers: [UsersController, ProfileCompatibilityController],
   providers: [UsersService],
+  exports: [UsersService],
 })
 export class UsersModule {}
