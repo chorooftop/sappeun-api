@@ -30,6 +30,11 @@ interface R2GuestKeyInput extends R2KeyInput {
   clientBoardSessionId: string
 }
 
+interface R2GroupKeyInput extends R2KeyInput {
+  userId: string
+  groupBoardId: string
+}
+
 export interface R2SignedUpload {
   bucketName: string
   objectKey: string
@@ -136,6 +141,26 @@ export class R2Service {
   guestPosterKey(input: R2GuestKeyInput) {
     return `${this.guestPrefix(input.guestSessionId)}boards/${
       input.clientBoardSessionId
+    }/cells/${input.position}/posters/${input.id}.${input.ext}`
+  }
+
+  // Group-board media keys: scoped by group_board_id but owner-hashed by the
+  // uploading user, so per-user prefixes keep working for cleanup/quota.
+  groupPhotoKey(input: R2GroupKeyInput) {
+    return `${this.userPrefix(input.userId)}group-boards/${
+      input.groupBoardId
+    }/cells/${input.position}/photos/${input.id}.${input.ext}`
+  }
+
+  groupClipKey(input: R2GroupKeyInput) {
+    return `${this.userPrefix(input.userId)}group-boards/${
+      input.groupBoardId
+    }/cells/${input.position}/clips/${input.id}.${input.ext}`
+  }
+
+  groupPosterKey(input: R2GroupKeyInput) {
+    return `${this.userPrefix(input.userId)}group-boards/${
+      input.groupBoardId
     }/cells/${input.position}/posters/${input.id}.${input.ext}`
   }
 

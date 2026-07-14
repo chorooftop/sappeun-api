@@ -44,6 +44,10 @@ export const envSchema = z.object({
     emptyToUndefined,
     z.enum(['true', 'false']).optional().default('true'),
   ),
+  GROUP_BINGO_ENABLED: z.preprocess(
+    emptyToUndefined,
+    z.enum(['true', 'false']).optional().default('true'),
+  ),
   QA_AUTH_ENABLED: z.preprocess(
     emptyToUndefined,
     z.enum(['true', 'false']).optional().default('false'),

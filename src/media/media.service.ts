@@ -830,6 +830,9 @@ export class MediaService {
       )
       .eq('id', photoId)
       .eq('user_id', userId)
+      // Group-board media must go through the group endpoints: deleting it
+      // here would leave the live group_board_cell_media row dangling.
+      .is('group_board_id', null)
       .is('deleted_at', null)
       .single()
     const data = result.data as PhotoRow | null
@@ -847,6 +850,9 @@ export class MediaService {
       )
       .eq('id', clipId)
       .eq('user_id', userId)
+      // Group-board media must go through the group endpoints (see
+      // getUserPhoto) — also prevents the write-then-400 description update.
+      .is('group_board_id', null)
       .is('deleted_at', null)
       .single()
     const data = result.data as ClipRow | null

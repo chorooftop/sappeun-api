@@ -393,6 +393,47 @@ export class BadgesService {
     }
   }
 
+  /**
+   * Group-board fanout (AC-11): delegates member snapshotting, badge minting
+   * and the streak completion ledger to the idempotent
+   * award_group_board_badges RPC. Safe to re-call from the self-heal path —
+   * the RPC's on-conflict semantics never double-increment earned_count, and
+   * it records group_board_completions even when no mission awards a badge.
+   * awardBoardBadges (personal path) is intentionally untouched (AC-15).
+   */
+  async awardGroupBoardBadges(params: {
+    groupBoardId: string
+    cells: readonly {
+      position: number
+      mission_snapshot: { id?: unknown } | null
+    }[]
+    freePosition: number | null
+  }): Promise<GroupBadgeAwardResult[]> {
+    const missionIds = [
+      ...new Set(
+        params.cells
+          .filter((cell) => cell.position !== params.freePosition)
+          .map((cell) => cell.mission_snapshot?.id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      ),
+    ]
+
+    // The RPC filters mission_ids against mission_content (awards_badge,
+    // active) itself, and must run even with zero badge candidates so the
+    // completion ledger is written.
+    const { data, error } = await this.admin.rpc('award_group_board_badges', {
+      p_group_board_id: params.groupBoardId,
+      p_badge_ids: missionIds,
+    })
+
+    if (error) throw error
+    return ((data ?? []) as GroupBadgeAwardResult[]).map((row) => ({
+      user_id: row.user_id,
+      badge_id: row.badge_id,
+      is_first_earn: row.is_first_earn,
+    }))
+  }
+
   async getBoardBadges(
     userId: string,
     boardIds: string[],
@@ -461,4 +502,10 @@ export interface BoardBadgeWithCatalog {
   difficulty: string
   gradeColor: string
   earnedAt: string
+}
+
+export interface GroupBadgeAwardResult {
+  user_id: string
+  badge_id: string
+  is_first_earn: boolean
 }

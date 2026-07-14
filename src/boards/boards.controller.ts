@@ -34,6 +34,7 @@ import {
   type UpdateBoardTitleInput,
 } from '@/boards/boards.schemas'
 import { ZodValidationPipe } from '@/common/pipes/zod-validation.pipe'
+import { GroupBoardsService } from '@/group-boards/group-boards.service'
 
 function assertBoardPosition(position: number) {
   if (!Number.isInteger(position) || position < 0 || position > 8) {
@@ -57,7 +58,10 @@ function parseBoardListQuery(query: unknown): BoardListQueryInput {
 
 @Controller('boards')
 export class BoardsController {
-  constructor(private readonly boardsService: BoardsService) {}
+  constructor(
+    private readonly boardsService: BoardsService,
+    private readonly groupBoardsService: GroupBoardsService,
+  ) {}
 
   @Get()
   @UseGuards(SupabaseAuthGuard)
@@ -80,6 +84,18 @@ export class BoardsController {
   @UseGuards(SupabaseAuthGuard)
   async current(@CurrentUser() user: User) {
     return this.boardsService.getActiveUserBoardState(user.id)
+  }
+
+  // AC-16: one call for everything playable today (personal + group boards).
+  // Must stay above the ':boardId' route so 'home' is not captured as an id.
+  @Get('home')
+  @UseGuards(SupabaseAuthGuard)
+  async home(@CurrentUser() user: User) {
+    const [personalBoard, groupBoards] = await Promise.all([
+      this.boardsService.getActiveUserBoardState(user.id),
+      this.groupBoardsService.getHomeSummaries(user.id),
+    ])
+    return { personalBoard, groupBoards }
   }
 
   @Delete('current')

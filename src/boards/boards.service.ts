@@ -30,6 +30,7 @@ import {
   previousKstDate,
   type BoardLifecycle,
 } from '@/common/time/kst'
+import { StreakService } from '@/boards/streak.service'
 import { SIGNED_PREVIEW_EXPIRES_SECONDS } from '@/media/media.constants'
 import { signedUrlExpiresAt } from '@/media/media.utils'
 import { R2Service } from '@/storage/r2.service'
@@ -630,6 +631,7 @@ export class BoardsService {
     private readonly supabase: SupabaseService,
     private readonly badges: BadgesService,
     private readonly clock: ClockService = new ClockService(),
+    private readonly streakService?: StreakService,
   ) {}
 
   private get admin(): any {
@@ -844,6 +846,14 @@ export class BoardsService {
   }
 
   private async computeStreakEndingAt(userId: string, dailyDate: string) {
+    // When wired via DI, streaks derive from personal boards UNION the group
+    // completion ledger (StreakService). The inline personal-only path below
+    // is the pre-group behavior, kept for direct construction without the
+    // service — solo results are identical either way (golden-tested).
+    if (this.streakService) {
+      return this.streakService.computeStreakEndingAt(userId, dailyDate)
+    }
+
     const { data, error } = await this.admin
       .from('boards')
       .select('daily_date')
