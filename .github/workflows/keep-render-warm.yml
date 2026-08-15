@@ -1,0 +1,79 @@
+name: Keep Render API Warm
+
+on:
+  schedule:
+    # Run every 10 minutes from 09:00 through 22:50 KST. The final request keeps
+    # the service warm until roughly 23:00, then Render can spin it down overnight.
+    - cron: '0-50/10 9-22 * * *'
+      timezone: Asia/Seoul
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: keep-render-api-warm
+  cancel-in-progress: true
+
+jobs:
+  ping-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Ping Render health endpoint
+        env:
+          HEALTH_URL: https://sappeun-api.onrender.com/v1/health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          deadline=$((SECONDS + 180))
+          attempt=0
+
+          while [[ "$SECONDS" -lt "$deadline" ]]; do
+            attempt=$((attempt + 1))
+            : > "$response_file"
+            http_code="000"
+            remaining=$((deadline - SECONDS))
+            if [[ "$remaining" -le 0 ]]; then
+              break
+            fi
+            request_timeout=20
+            if [[ "$remaining" -lt "$request_timeout" ]]; then
+              request_timeout="$remaining"
+            fi
+
+            if http_code="$(curl \
+              --silent \
+              --show-error \
+              --location \
+              --connect-timeout 10 \
+              --max-time "$request_timeout" \
+              --header 'User-Agent: sappeun-github-keep-warm/1.0' \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              "$HEALTH_URL")"; then
+              if [[ "$http_code" == "200" ]] && \
+                jq -e '.ok == true and .service == "sappeun-api"' \
+                  "$response_file" > /dev/null 2>&1; then
+                echo "Render API is warm and healthy."
+                cat "$response_file"
+                exit 0
+              fi
+            fi
+
+            echo "Attempt $attempt failed (HTTP $http_code)."
+            remaining=$((deadline - SECONDS))
+            if [[ "$remaining" -gt 0 ]]; then
+              sleep_seconds=10
+              if [[ "$remaining" -lt "$sleep_seconds" ]]; then
+                sleep_seconds="$remaining"
+              fi
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo '::error::Render API did not become healthy within 180 seconds.'
+          cat "$response_file" || true
+          exit 1
