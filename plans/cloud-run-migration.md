@@ -412,3 +412,80 @@ Cloudflare MCP(OAuth)로 확보한 값:
 **대체 불가 값:** `R2_OWNER_HASH_SECRET`은 `src/storage/r2.service.ts:103-109`에서 R2 **객체 키 경로**를
 만든다(`users/${ownerHash}/`, `temp/${ownerHash}/`). 값이 바뀌면 기존 업로드 미디어의 경로를 계산할 수
 없어 사실상 데이터 유실이다. **반드시 Render의 기존 값을 그대로 옮긴다.**
+
+---
+
+## 11. 배포 실행 기록 (2026-08-23)
+
+### 배포 완료
+
+```
+서비스 URL   https://sappeun-api-640444807734.asia-northeast1.run.app
+리비전       sappeun-api-00001-kpk
+이미지       asia-northeast1-docker.pkg.dev/sappeun/sappeun/api:bootstrap
+플래그       --min-instances 0 --max-instances 3 --concurrency 80
+             --cpu 1 --memory 512Mi --cpu-boost --allow-unauthenticated
+```
+
+**`CORS_ORIGINS` 값에 쉼표가 있어 `--set-env-vars`를 쓸 수 없었다.** 쉼표가 구분자라 값이 쪼개진다.
+`--env-vars-file`(YAML)로 넣었다. 같은 이유로 앞으로도 이 방식을 유지한다.
+
+### 스모크 결과
+
+| 검사 | 결과 |
+|---|---|
+| `/v1/health` | 200, `nodeEnv=production` |
+| 워밍 응답 TTFB | 0.10~0.11초 (Render 워밍 0.13~0.38초보다 빠름 — 도쿄 리전 근접) |
+| `/v1/missions/content` | 200 + 실제 미션 데이터(48셀) → Supabase 연결 정상 |
+| `/health` (프리픽스 없음) | 404 → `setGlobalPrefix` 정상 |
+| `/v1/jobs/*` 무인증 POST | 401 → `CRON_SECRET` 주입·게이트 정상 |
+| R2 자격증명 | `sappeun-photos` 버킷 직접 조회 성공 |
+
+> `/v1/missions`가 404인 것은 정상이다 — 실제 라우트는 `@Get('content')`뿐이다.
+
+### 시크릿 확보 결과 (로컬 `.env` ↔ Render 프로덕션 대조)
+
+- **`R2_ACCOUNT_ID`·`R2_BUCKET`이 Cloudflare에서 추론한 값과 정확히 일치**했다 → 추론 검증됨
+- `SUPABASE_*` 3개는 로컬=프로덕션 동일
+- `NODE_ENV`·`CORS_ORIGINS`만 다름 → `.env`는 로컬 개발값을 유지하고, 프로덕션 값은 Cloud Run env var로 분리
+- `CRON_SECRET`은 내가 생성했던 값을 파기하고 **Render 기존 값을 채택**했다.
+  외부에서 이 시크릿으로 jobs를 호출 중일 가능성을 보존하기 위함이다
+
+### Phase 4 — Cloud Scheduler (완료)
+
+무료 한도가 job 3개인데 필요 작업이 4개로 보였으나, **cleanup 3종이 각각 DB를 치므로
+Supabase 무활동 방지를 겸한다** → 별도 health 핑 job이 불필요하고 3개 안에 들어간다.
+
+| Job | 스케줄 (KST) |
+|---|---|
+| `sappeun-cleanup-temp-photos` | 매일 03:10 |
+| `sappeun-cleanup-temp-clips` | 매일 03:20 |
+| `sappeun-cleanup-stale-user-media` | 매일 03:30 |
+
+**인증 실동작을 검증했다** — `jobs run`으로 강제 실행 후 Cloud Run 로그에서
+`Google-Cloud-Scheduler` UA 요청이 **201**임을 확인했다. 이 검증을 생략하면 헤더가 틀려도
+매일 401만 조용히 쌓인다.
+
+cleanup 안전성은 코드로 확인했다: 만료된 게스트 임시 업로드(`expires_at <= now`)와
+업로드 미완료 고아 레코드(`uploaded_at is null`)만 대상이고 `limit=100` 배치 제한이 있다.
+정상 사용자 미디어는 건드리지 않는다.
+
+> `keep-render-warm.yml`은 **아직 삭제하지 않았다.** 프론트가 여전히 `onrender.com`을 가리키므로
+> Render가 현재 프로덕션이다. Phase 6(Render 종료) 시점에 삭제한다.
+
+### 예산 알림 (완료)
+
+`gcloud billing budgets create`와 REST 양쪽 모두 `INVALID_ARGUMENT`였던 원인은
+**결제 계정 통화가 KRW인데 요청을 USD로 보낸 것**이었다. KRW로 바꾸니 즉시 생성됐다.
+
+```
+sappeun 무료티어 감시 | 10,000 KRW | 임계 50% / 90% / 100% | 대상 projects/640444807734
+```
+
+### 남은 것
+
+1. **콜드스타트 실측** — 16분 방치 후 첫 요청 TTFB 측정 진행 중. 이 수치가 `min-instances` 재조정의 근거다
+2. **이미지 태그** — 현재 `bootstrap`이다. 커밋 sha 태그로 재빌드·재배포해야 리비전 추적이 맞는다.
+   단 **재배포는 콜드스타트 측정이 끝난 뒤에** 한다 (재배포하면 인스턴스가 새로 떠 측정이 무효가 된다)
+3. Phase 5(프론트 `API_BASE_URL` 교체) · Phase 6(Render 종료·문서화)
+4. Phase 3(커스텀 도메인)은 `sappeun.app` 미등록이라 도메인 구매가 선행되어야 한다
