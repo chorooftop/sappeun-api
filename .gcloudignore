@@ -1,0 +1,23 @@
+# 빌드 컨텍스트가 커지면 Cloud Build 업로드가 느려지고 시크릿이 섞여 들어갈 위험이 생긴다.
+# 이미지에 필요한 건 package.json/pnpm-lock.yaml/tsconfig*/nest-cli.json/src 뿐이다.
+#
+# 디렉토리 제외는 반드시 루트 앵커(/)를 붙인다. 앵커가 없으면 gitignore 문법에서
+# 모든 depth에 매칭되어 src/supabase/ 같은 소스 디렉토리까지 날아간다.
+# (.gcloudignore가 이 파일의 사본이므로 여기서부터 지킨다)
+node_modules
+/dist
+.git
+/.github
+/.omc
+/.gstack
+/.wrangler
+/.claude
+/plans
+/artifacts
+/scripts
+/supabase
+/test
+**/.env
+**/.env.*
+!.env.example
+**/.DS_Store
