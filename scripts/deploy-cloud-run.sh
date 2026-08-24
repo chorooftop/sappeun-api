@@ -45,9 +45,15 @@ gcloud run deploy "$SERVICE" \
   --image "$IMAGE" --region "$REGION" --project "$PROJECT" \
   --quiet
 
-URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format='value(status.url)')"
+# Cloud Run은 두 형식의 URL을 준다 — 프로젝트 번호형과 레거시 해시형이고 둘 다 유효하다.
+# status.url 은 해시형을 돌려주지만, 스모크는 **프론트가 실제로 쓰는** 프로젝트 번호형을
+# 때려야 의미가 있다 (sappeun-frontend/docs/ENV.md). 해시형은 참고로만 출력한다.
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
+LEGACY_URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format='value(status.url)')"
 
 echo "▶ 스모크  $URL"
+echo "  (레거시 URL: $LEGACY_URL — 둘 다 같은 서비스다)"
 fail=0
 check() { # 이름 경로 기대코드
   code="$(curl -s -o /dev/null -m 30 -X "${4:-GET}" -w '%{http_code}' "$URL$2")"
