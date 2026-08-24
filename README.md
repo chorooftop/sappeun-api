@@ -47,6 +47,20 @@ image     asia-northeast1-docker.pkg.dev/sappeun/sappeun/api:<git-sha>
 scaling   --min-instances 0 --max-instances 3 --concurrency 80 --cpu-boost
 ```
 
+Routine deploys go through the script:
+
+```bash
+./scripts/deploy-cloud-run.sh              # build + deploy + smoke
+./scripts/deploy-cloud-run.sh --no-build   # redeploy an already-built sha
+```
+
+It tags the image with the current commit sha, **refuses to run when any build
+input is uncommitted** (so the tag never lies about what is running), replaces
+only the image so env vars and secrets are inherited from the previous revision,
+and runs a smoke suite that prints rollback instructions on failure. Changing the
+env vars or secrets themselves needs the full deploy command instead — see
+[`plans/cloud-run-migration.md`](plans/cloud-run-migration.md) §5 Phase 2.
+
 Images are built with **Cloud Build** (`gcloud builds submit`), not locally — this
 repo is developed without a container runtime. Note that `gcloud builds submit`
 honours `.gcloudignore` (gitignore syntax), not `.dockerignore`, so directory
