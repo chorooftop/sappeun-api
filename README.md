@@ -37,36 +37,54 @@ and must never be hand-edited. To keep the two in sync:
 
 Flutter calls this API for privileged operations such as Cloudflare R2 presigned URLs, media confirmation, guest promotion, account deletion, and cleanup jobs. Supabase remains the Auth/Postgres provider.
 
-## Render Runtime Debugging
+## Deployment (Google Cloud Run)
 
-Runtime failures are triaged from Render Events, Logs, and `/v1/health`.
-The app emits structured one-line logs for bootstrap, request completion, 5xx
-exceptions, and process-level failures. See
-[`plans/render-runtime-debugging.md`](plans/render-runtime-debugging.md) for the
-incident checklist.
+```
+project   sappeun (640444807734)
+service   sappeun-api        region asia-northeast1 (Tokyo)
+url       https://sappeun-api-640444807734.asia-northeast1.run.app
+image     asia-northeast1-docker.pkg.dev/sappeun/sappeun/api:<git-sha>
+scaling   --min-instances 0 --max-instances 3 --concurrency 80 --cpu-boost
+```
 
-## Render Free Keep-Warm
+Images are built with **Cloud Build** (`gcloud builds submit`), not locally — this
+repo is developed without a container runtime. Note that `gcloud builds submit`
+honours `.gcloudignore` (gitignore syntax), not `.dockerignore`, so directory
+excludes there must be root-anchored (`/supabase`, not `supabase`) or they will
+also strip `src/supabase/`.
 
-The [keep-warm workflow](.github/workflows/keep-render-warm.yml) calls the public
-`/v1/health` endpoint every 10 minutes from 09:00 through 22:50 in the
-`Asia/Seoul` timezone. The final request keeps the service inside Render's
-15-minute idle window until roughly 23:00, after which it can spin down overnight.
+Credentials live in **Secret Manager** and are injected with `--set-secrets`.
+Non-credential values go through `--env-vars-file` (a YAML file is required
+because `CORS_ORIGINS` contains commas, which `--set-env-vars` treats as a
+separator).
 
-The workflow:
+Scheduled cleanup runs on **Cloud Scheduler** — `cleanup-temp-photos` (03:10 KST),
+`cleanup-temp-clips` (03:20), `cleanup-stale-user-media` (03:30). Each one touches
+Postgres, which doubles as the keep-alive that stops Supabase Free from pausing
+the project after 7 idle days, so no separate ping job is needed.
 
-- can also be run manually with `workflow_dispatch`;
-- retries until a 180-second wall-clock deadline when Render is already waking
-  up;
-- only succeeds when the endpoint returns HTTP 200 and valid JSON containing
-  `"ok": true` and `"service": "sappeun-api"`;
-- uses no repository secrets and does not check out the source code.
+Full migration record, deploy commands, rollback, and measured cold-start numbers:
+[`plans/cloud-run-migration.md`](plans/cloud-run-migration.md).
 
-This 14-hour daily warm window uses roughly 437 instance hours in a 31-day month,
-including Render's normal 15-minute spin-down window. That is within Render's
-750-hour monthly workspace allowance. Adding another Free service would share
-that allowance and can exhaust it earlier. Health-check responses also count
-toward Render's outbound bandwidth allowance; their payload is tiny, but
-workspace usage should still be monitored. GitHub can delay or drop scheduled
-runs, and scheduled workflows in public repositories are disabled after 60 days
-without repository activity, so this reduces cold starts but is not an uptime
-guarantee.
+## Runtime Debugging
+
+Runtime failures are triaged from Cloud Run logs and `/v1/health`. The app emits
+structured one-line logs for bootstrap, request completion, 5xx exceptions, and
+process-level failures.
+
+```bash
+gcloud logging read \
+  'resource.type=cloud_run_revision AND resource.labels.service_name=sappeun-api' \
+  --project sappeun --limit 20
+```
+
+`app_bootstrap_started` and `app_listening` carry `uptimeMs`, which separates
+application boot time from Cloud Run container startup when diagnosing latency.
+
+## Render (being retired)
+
+Render is still the host that already-released Flutter builds point at, so the
+service stays up until the app is rebuilt against the Cloud Run URL. The
+[keep-warm workflow](.github/workflows/keep-render-warm.yml) exists only to mask
+Render Free's ~43s cold start during that window; delete it together with the
+Render service, not before.
