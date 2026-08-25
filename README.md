@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED (2026-08-25)** — 이 레포는 모노레포 [chorooftop/sappeun](https://github.com/chorooftop/sappeun)의 `apps/api/`로 병합되었다 (히스토리 보존). 이후 작업은 모노레포에서 진행한다.
+
 # sappeun-api
 
 NestJS API for the Sappeun Flutter app.
